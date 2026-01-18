@@ -4,7 +4,7 @@ import re
 import json
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
-from openai import OpenAI
+import google.generativeai as genai
 
 
 # =========================
@@ -13,8 +13,8 @@ from openai import OpenAI
 
 st.set_page_config(page_title="TS4 Mod Analyzer — Phase 1", layout="centered")
 
-OPENAI_MODEL = "gpt-4.1-mini"
 MAX_TEXT_CHARS = 12000
+GEMINI_MODEL = "gemini-1.5-flash"
 
 
 # =========================
@@ -45,38 +45,30 @@ def clean_text(html: str) -> str:
 
 
 def fetch_page(url: str) -> str:
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
     response = requests.get(url, headers=headers, timeout=20)
     response.raise_for_status()
     return response.text
 
 
 # =========================
-# LM READER (FASE 1)
+# GEMINI READER (FASE 1)
 # =========================
 
 def lm_read_mod(source: str, url: str, raw_text: str) -> dict:
-    client = OpenAI()
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
-    system_prompt = (
-        "You are a parser. You DO NOT classify mods.\n"
-        "You ONLY extract factual information.\n"
-        "Return ONLY valid JSON following the schema.\n"
-        "Do not add explanations."
-    )
+    model = genai.GenerativeModel(GEMINI_MODEL)
 
-    user_prompt = f"""
-Source: {source}
-URL: {url}
+    prompt = f"""
+You are a parser. You DO NOT classify mods.
+You ONLY extract factual information.
 
-Extract the following fields from the text below:
-
+Return ONLY valid JSON with the following fields:
 - mod_name
 - creator
-- functional_summary (1–2 sentences)
-- confidence (high | medium | low)
+- functional_summary
+- confidence ("high", "medium", "low")
 - notes (array of short strings)
 
 Rules:
@@ -84,22 +76,21 @@ Rules:
 - Do NOT invent data.
 - Focus only on what the mod DOES in-game.
 
+Source: {source}
+URL: {url}
+
 TEXT:
 \"\"\"
 {raw_text[:MAX_TEXT_CHARS]}
 \"\"\"
 """
 
-    response = client.chat.completions.create(
-        model=OPENAI_MODEL,
-        temperature=0,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
+    response = model.generate_content(
+        prompt,
+        generation_config={"temperature": 0}
     )
 
-    return json.loads(response.choices[0].message.content)
+    return json.loads(response.text)
 
 
 # =========================
@@ -154,7 +145,10 @@ def assert_phase1_output(data: dict):
 # =========================
 
 st.title("TS4 Mod Analyzer — Phase 1")
-st.markdown("Cole uma **URL de mod** (Patreon, Tumblr ou site). O app **apenas lê e descreve** o mod.")
+st.markdown(
+    "Cole uma **URL de mod** (Patreon, Tumblr ou site). "
+    "O app **apenas lê e descreve** o mod."
+)
 
 url_input = st.text_input("URL do mod")
 
