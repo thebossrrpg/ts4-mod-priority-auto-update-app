@@ -1,6 +1,6 @@
 # ============================================================
 # TS4 Mod Analyzer
-# Version: v3.1.5 (UI: Mod/Criador > Success > Avisos > Debug)
+# Version: v3.1.6 (versão incrementada + UI limpa final)
 # ============================================================
 
 import streamlit as st
@@ -131,7 +131,7 @@ def add_credits_footer():
             </a>
         </div>
         <div style="margin-top: 0.8rem; font-size: 0.75rem; opacity: 0.7;">
-            v3.1.5
+            v3.1.6
         </div>
     </div>
     """
@@ -144,11 +144,11 @@ def add_credits_footer():
 st.title("TS4 Mod Analyzer — Phase 1")
 
 st.markdown("""
-Cole a **URL de um mod** (itch.io, CurseForge, Patreon, etc.).  
+Cole a **URL de um mod**.  
 Extrai identidade básica para evitar duplicatas no Notion (não lê conteúdo protegido).
 """)
 
-url_input = st.text_input("URL do mod", placeholder="https://kuttoe.itch.io/mini-mods-bug-fixes")
+url_input = st.text_input("URL do mod", placeholder="Cole aqui a URL completa do mod")
 
 if st.button("Analisar"):
     if not url_input.strip():
@@ -158,7 +158,7 @@ if st.button("Analisar"):
             try:
                 result = analyze_url(url_input.strip())
 
-                # Primeiro: Mod / Criador
+                # Primeiro: resultado principal
                 col1, col2 = st.columns(2)
                 with col1:
                     st.subheader("📦 Mod")
@@ -167,16 +167,16 @@ if st.button("Analisar"):
                     st.subheader("👤 Criador")
                     st.write(result["creator"])
 
-                # Depois: Success message
+                # Depois: success message
                 st.success("Identidade extraída!")
 
-                # Avisos/infos em seguida
+                # Avisos/infos
                 if result["identity_debug"]["is_blocked"]:
                     st.warning("⚠️ Bloqueio detectado (Cloudflare ou similar). Usando fallback do slug/domínio.")
                 if not result["identity_debug"]["og_title"]:
                     st.info("ℹ️ og:title não encontrado. Usando título da página ou slug.")
 
-                # Por último: Debug
+                # Debug por último (só após análise)
                 with st.expander("🔍 Debug técnico (fonte completa)"):
                     st.json(result["identity_debug"])
 
