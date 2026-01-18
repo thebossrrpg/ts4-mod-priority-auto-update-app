@@ -1,6 +1,6 @@
 # ============================================================
 # TS4 Mod Analyzer
-# Version: v3.1.6 (versão incrementada + UI limpa final)
+# Version: v3.1.7 (botão debug após Mod/Criador)
 # ============================================================
 
 import streamlit as st
@@ -131,7 +131,7 @@ def add_credits_footer():
             </a>
         </div>
         <div style="margin-top: 0.8rem; font-size: 0.75rem; opacity: 0.7;">
-            v3.1.6
+            v3.1.7
         </div>
     </div>
     """
@@ -150,6 +150,10 @@ Extrai identidade básica para evitar duplicatas no Notion (não lê conteúdo p
 
 url_input = st.text_input("URL do mod", placeholder="Cole aqui a URL completa do mod")
 
+# Sessão para guardar resultado e mostrar botão debug
+if 'last_result' not in st.session_state:
+    st.session_state.last_result = None
+
 if st.button("Analisar"):
     if not url_input.strip():
         st.warning("Cole uma URL válida.")
@@ -157,8 +161,9 @@ if st.button("Analisar"):
         with st.spinner("Analisando..."):
             try:
                 result = analyze_url(url_input.strip())
+                st.session_state.last_result = result
 
-                # Primeiro: resultado principal
+                # 1. Resultado principal (Mod / Criador)
                 col1, col2 = st.columns(2)
                 with col1:
                     st.subheader("📦 Mod")
@@ -167,18 +172,19 @@ if st.button("Analisar"):
                     st.subheader("👤 Criador")
                     st.write(result["creator"])
 
-                # Depois: success message
+                # 2. Botão de debug discreto (logo após Criador)
+                if st.button("🔍 Ver debug", help="Detalhes completos da extração", key="debug_btn", use_container_width=False):
+                    with st.expander("Debug técnico (fonte completa)", expanded=True):
+                        st.json(result["identity_debug"])
+
+                # 3. Success message
                 st.success("Identidade extraída!")
 
-                # Avisos/infos
+                # 4. Avisos/infos
                 if result["identity_debug"]["is_blocked"]:
                     st.warning("⚠️ Bloqueio detectado (Cloudflare ou similar). Usando fallback do slug/domínio.")
                 if not result["identity_debug"]["og_title"]:
                     st.info("ℹ️ og:title não encontrado. Usando título da página ou slug.")
-
-                # Debug por último (só após análise)
-                with st.expander("🔍 Debug técnico (fonte completa)"):
-                    st.json(result["identity_debug"])
 
             except Exception as e:
                 st.error(f"Erro: {str(e)}")
