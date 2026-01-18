@@ -1,6 +1,6 @@
 # ============================================================
 # TS4 Mod Analyzer
-# Version: v3.1.9 (persistência total via session_state + render fora do botão)
+# Version: v3.2 (layout limpo restaurado, sem caixa azul inicial)
 # ============================================================
 
 import streamlit as st
@@ -31,8 +31,7 @@ def fetch_page(url: str) -> str:
         response.raise_for_status()
         return response.text
     except Exception as e:
-        st.error(f"Erro ao buscar página: {str(e)}")
-        return ""
+        raise RuntimeError(f"Erro no fetch: {e}")
 
 def extract_identity(html: str, url: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
@@ -98,25 +97,54 @@ def normalize_identity(identity: dict) -> dict:
         "creator": creator or "—"
     }
 
-def analyze_url(url: str) -> dict | None:
-    try:
-        html = fetch_page(url)
-        if not html:
-            return None
-        raw = extract_identity(html, url)
-        norm = normalize_identity(raw)
-        return {
-            "url": url,
-            "mod_name": norm["mod_name"],
-            "creator": norm["creator"],
-            "identity_debug": raw
-        }
-    except Exception as e:
-        st.error(f"Erro na análise: {str(e)}")
-        return None
+def analyze_url(url: str) -> dict:
+    html = fetch_page(url)
+    raw = extract_identity(html, url)
+    norm = normalize_identity(raw)
+    return {
+        "url": url,
+        "mod_name": norm["mod_name"],
+        "creator": norm["creator"],
+        "identity_debug": raw
+    }
+
+def add_credits_footer():
+    footer_html = """
+    <div style="
+        text-align: center;
+        padding: 1.5rem 0 1rem;
+        font-size: 0.9rem;
+        color: #6b7280;
+        margin-top: 2rem;
+        border-top: 1px solid #e5e7eb;
+    ">
+        <div style="margin-bottom: 0.8rem; font-weight: bold; font-size: 1rem;">
+            Criado por Akin (@UnpaidSimmer)
+        </div>
+        <div style="display: flex; justify-content: center; align-items: center; gap: 1.5rem; flex-wrap: wrap;">
+            <span style="font-size: 0.85rem;">Com:</span>
+            <a href="https://lovable.dev" target="_blank" style="text-decoration: none;">
+                <img src="https://cdn.brandfetch.io/lovable.dev/logo" alt="Lovable" style="height: 20px; max-width: 80px; vertical-align: middle;">
+            </a>
+            <a href="https://chatgpt.com" target="_blank" style="text-decoration: none;">
+                <img src="https://upload.wikimedia.org/wikipedia/commons/0/04/ChatGPT_logo.svg" alt="ChatGPT" style="height: 20px; max-width: 80px; vertical-align: middle;">
+            </a>
+            <a href="https://x.ai" target="_blank" style="text-decoration: none;">
+                <img src="https://1000logos.net/wp-content/uploads/2024/05/Grok-Logo.png" alt="Grok" style="height: 20px; max-width: 80px; vertical-align: middle;">
+            </a>
+            <a href="https://www.notion.so" target="_blank" style="text-decoration: none;">
+                <img src="https://www.notion.so/front-static/shared/notion-app-icon-3d.png" alt="Notion" style="height: 20px; max-width: 80px; vertical-align: middle;">
+            </a>
+        </div>
+        <div style="margin-top: 0.8rem; font-size: 0.75rem; opacity: 0.7;">
+            v3.1.7
+        </div>
+    </div>
+    """
+    st.markdown(footer_html, unsafe_allow_html=True)
 
 # ==============================================
-# INTERFACE PRINCIPAL
+# INTERFACE PRINCIPAL (sem mensagem inicial azul)
 # ==============================================
 
 st.title("TS4 Mod Analyzer — Phase 1")
@@ -126,56 +154,40 @@ Cole a **URL de um mod**.
 Extrai identidade básica para evitar duplicatas no Notion (não lê conteúdo protegido).
 """)
 
-url_input = st.text_input("URL do mod", placeholder="Cole aqui a URL completa do mod", key="url_input")
-
-if 'analysis_result' not in st.session_state:
-    st.session_state.analysis_result = None
+url_input = st.text_input("URL do mod", placeholder="Cole aqui a URL completa do mod")
 
 if st.button("Analisar"):
     if not url_input.strip():
         st.warning("Cole uma URL válida.")
     else:
         with st.spinner("Analisando..."):
-            result = analyze_url(url_input.strip())
-            if result:
-                st.session_state.analysis_result = result
-            else:
-                st.session_state.analysis_result = None
-                st.error("Análise falhou. Tente outra URL ou verifique a conexão.")
+            try:
+                result = analyze_url(url_input.strip())
 
-# Renderização persistente do resultado (fora do botão)
-if st.session_state.analysis_result:
-    result = st.session_state.analysis_result
+                # Resultado principal
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.subheader("📦 Mod")
+                    st.write(result["mod_name"])
+                with col2:
+                    st.subheader("👤 Criador")
+                    st.write(result["creator"])
 
-    # 1. Mod / Criador
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("📦 Mod")
-        st.write(result["mod_name"])
-    with col2:
-        st.subheader("👤 Criador")
-        st.write(result["creator"])
+                # Botão debug logo após Mod/Criador
+                if st.button("🔍 Ver debug técnico", help="Detalhes completos da extração"):
+                    with st.expander("Debug técnico (fonte completa)", expanded=True):
+                        st.json(result["identity_debug"])
 
-    # 2. Botão debug logo após
-    if st.button("🔍 Ver debug técnico", help="Detalhes completos da extração", key="debug_btn"):
-        with st.expander("Debug técnico (fonte completa)", expanded=True):
-            st.json(result["identity_debug"])
+                # Success
+                st.success("Identidade extraída!")
 
-    # 3. Success
-    st.success("Identidade extraída!")
+                # Avisos
+                if result["identity_debug"]["is_blocked"]:
+                    st.warning("⚠️ Bloqueio detectado (Cloudflare ou similar). Usando fallback do slug/domínio.")
+                if not result["identity_debug"]["og_title"]:
+                    st.info("ℹ️ og:title não encontrado. Usando título da página ou slug.")
 
-    # 4. Avisos
-    if result["identity_debug"]["is_blocked"]:
-        st.warning("⚠️ Bloqueio detectado (Cloudflare ou similar). Usando fallback do slug/domínio.")
-    if not result["identity_debug"]["og_title"]:
-        st.info("ℹ️ og:title não encontrado. Usando título da página ou slug.")
-
-    # Botão limpar (opcional, discreto)
-    if st.button("Limpar resultado", help="Voltar para tela inicial", key="clear_btn"):
-        st.session_state.analysis_result = None
-        st.rerun()
-
-else:
-    st.info("Cole uma URL e clique em Analisar para começar.")
+            except Exception as e:
+                st.error(f"Erro durante análise: {str(e)}")
 
 add_credits_footer()
