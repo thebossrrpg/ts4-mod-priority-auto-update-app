@@ -3,4 +3,4 @@ requests
 beautifulsoup4
 notion-client
 rapidfuzz
-google-generativeai
+google-genai
