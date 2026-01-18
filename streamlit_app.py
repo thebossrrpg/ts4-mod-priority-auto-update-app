@@ -46,8 +46,19 @@ def clean_text(html: str) -> str:
 
 
 def fetch_page(url: str) -> str:
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
+
     response = requests.get(url, headers=headers, timeout=20)
+
+    if response.status_code == 403:
+        raise PermissionError("Fonte bloqueia acesso automático (403).")
+
     response.raise_for_status()
     return response.text
 
