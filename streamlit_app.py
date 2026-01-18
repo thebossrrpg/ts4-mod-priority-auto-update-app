@@ -22,6 +22,6 @@ if st.button("Analisar") and url:
         upsert_mod(mod_data, result)
         st.info("Registro atualizado no Notion.")
 
-st.markdown(\"\"\"---
+st.markdown("""
 Criado por Akin (@UnpaidSimmer), com Lovable.
-\"\"\")
+""")
