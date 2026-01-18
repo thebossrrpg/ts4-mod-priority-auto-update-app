@@ -1,6 +1,6 @@
 # ============================================================
 # TS4 Mod Analyzer
-# Version: v3.1.5 (prioriza page_title do debug quando válido)
+# Version: v3.1.5 (UI: Mod/Criador > Success > Avisos > Debug)
 # ============================================================
 
 import streamlit as st
@@ -65,12 +65,11 @@ def normalize_name(raw: str) -> str:
     if not raw:
         return "—"
     cleaned = re.sub(r'\s+', ' ', raw).strip()
-    cleaned = re.sub(r'(\b\w+\b)(\s+\1)+$', r'\1', cleaned, flags=re.I)  # remove duplicatas
+    cleaned = re.sub(r'(\b\w+\b)(\s+\1)+$', r'\1', cleaned, flags=re.I)
     cleaned = re.sub(r'(by\s+[\w\s]+)$', '', cleaned, flags=re.I).strip()
     return cleaned.title() if cleaned.islower() else cleaned
 
 def normalize_identity(identity: dict) -> dict:
-    # Prioridade v3.1.5: page_title (se não bloqueado) > og_title > slug
     preferred_name = None
     if not identity["is_blocked"] and identity["page_title"] and "just a moment" not in identity["page_title"].lower():
         preferred_name = identity["page_title"]
@@ -81,11 +80,8 @@ def normalize_identity(identity: dict) -> dict:
 
     mod_name = normalize_name(preferred_name or "Desconhecido")
 
-    # Criador: og_site > domain > extração de "by " se disponível
-    creator_raw = identity["og_site"] or identity["domain"]
-    creator = normalize_name(creator_raw)
-
-    if "by " in preferred_name.lower():
+    creator = identity["og_site"] or identity["domain"]
+    if "by " in (preferred_name or "").lower():
         creator_part = re.search(r'by\s+([\w\s]+)', preferred_name, re.I)
         if creator_part:
             creator = normalize_name(creator_part.group(1).strip())
@@ -162,22 +158,25 @@ if st.button("Analisar"):
             try:
                 result = analyze_url(url_input.strip())
 
+                # Primeiro: Mod / Criador
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.subheader("📦 Mod")
+                    st.write(result["mod_name"])
+                with col2:
+                    st.subheader("👤 Criador")
+                    st.write(result["creator"])
+
+                # Depois: Success message
+                st.success("Identidade extraída!")
+
+                # Avisos/infos em seguida
                 if result["identity_debug"]["is_blocked"]:
                     st.warning("⚠️ Bloqueio detectado (Cloudflare ou similar). Usando fallback do slug/domínio.")
                 if not result["identity_debug"]["og_title"]:
                     st.info("ℹ️ og:title não encontrado. Usando título da página ou slug.")
 
-                st.success("Identidade extraída!")
-
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.subheader("📦 Mod")
-                    st.write(result["mod_name"])
-
-                with col2:
-                    st.subheader("👤 Criador")
-                    st.write(result["creator"])
-
+                # Por último: Debug
                 with st.expander("🔍 Debug técnico (fonte completa)"):
                     st.json(result["identity_debug"])
 
