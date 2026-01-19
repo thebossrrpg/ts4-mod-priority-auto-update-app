@@ -1,190 +1,205 @@
-# ==========================================================
-# TS4 Mod Priority Auto Update
-# Phase 2 – Sandbox (Baseline duplicate detection)
-# Version: v3.4
-# ==========================================================
+# ============================================================
+# TS4 Mod Analyzer — Phase 2 (Sandbox)
+# Version: v3.5
+# Score cruzado por nome + URL + domínio (sem IA)
+# ============================================================
 
 import streamlit as st
 import requests
 import re
-from difflib import SequenceMatcher
 from urllib.parse import urlparse
+from bs4 import BeautifulSoup
 
-# ----------------------------------------------------------
-# PAGE CONFIG
-# ----------------------------------------------------------
+# =========================
+# CONFIG
+# =========================
 
 st.set_page_config(
-    page_title="TS4 Mod Priority – Fase 2 (Sandbox)",
-    layout="centered",
+    page_title="TS4 Mod Analyzer — Phase 2 (Sandbox)",
+    layout="centered"
 )
 
-# ----------------------------------------------------------
-# SESSION STATE INIT
-# ----------------------------------------------------------
+REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
+}
 
-if "analysis_result" not in st.session_state:
-    st.session_state.analysis_result = None
+STOPWORDS = {
+    "mod", "mods", "post", "posts", "v", "v1", "v2", "version",
+    "the", "and", "or", "for", "with", "by"
+}
 
-# ----------------------------------------------------------
-# UTILS
-# ----------------------------------------------------------
+# =========================
+# MOCK NOTION DATA (sandbox)
+# =========================
 
-def tokenize(text: str) -> set[str]:
-    """
-    Tokenização tolerante:
-    - mantém siglas (lgbtqia+)
-    - remove lixo
-    - ignora tokens muito curtos
-    """
-    if not text:
-        return set()
+NOTION_MODS = [
+    "LGBTQIA+ / Gender & Orientation Overhaul",
+    "Mini-mods: Tweaks & Changes",
+    "Automatic Beard Shadows"
+]
 
-    tokens = re.findall(r"[a-zA-Z0-9\+]+", text.lower())
-    return {t for t in tokens if len(t) >= 3}
+# =========================
+# HELPERS
+# =========================
 
+def clean_text(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9+ ]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
-def compute_similarity_baseline(slug: str, notion_name: str) -> dict:
-    """
-    Score base determinístico.
-    GARANTE score > 0 se houver interseção semântica mínima.
-    """
+def tokenize(text: str) -> list[str]:
+    tokens = clean_text(text).split()
+    return [
+        t for t in tokens
+        if t not in STOPWORDS and len(t) > 2
+    ]
 
-    slug_tokens = tokenize(slug)
-    notion_tokens = tokenize(notion_name)
+def fetch_page(url: str) -> str:
+    r = requests.get(url, headers=REQUEST_HEADERS, timeout=20)
+    return r.text
 
-    common_tokens = slug_tokens & notion_tokens
+# =========================
+# IDENTIDADE (Fase 1 reaproveitada)
+# =========================
 
-    debug = {
-        "slug_tokens": sorted(slug_tokens),
-        "notion_tokens": sorted(notion_tokens),
-        "common_tokens": sorted(common_tokens),
-    }
+def extract_identity(html: str, url: str) -> dict:
+    soup = BeautifulSoup(html, "html.parser")
 
-    # REGRA DE OURO
-    if common_tokens:
-        intersection_score = len(common_tokens) / max(
-            len(slug_tokens), len(notion_tokens)
-        )
+    page_title = soup.title.string.strip() if soup.title else None
 
-        score = max(0.15, intersection_score)
+    og_title = None
+    og_site = None
+    for meta in soup.find_all("meta"):
+        if meta.get("property") == "og:title":
+            og_title = meta.get("content")
+        if meta.get("property") == "og:site_name":
+            og_site = meta.get("content")
 
-        debug["reason"] = "token_intersection"
-        debug["raw_intersection_score"] = intersection_score
-
-        return {
-            "score": round(score, 2),
-            "debug": debug,
-        }
-
-    # fallback fuzzy fraco
-    fuzzy_score = SequenceMatcher(
-        None,
-        slug.lower(),
-        notion_name.lower()
-    ).ratio()
-
-    debug["reason"] = "fuzzy_fallback"
-
-    return {
-        "score": round(fuzzy_score * 0.3, 2),
-        "debug": debug,
-    }
-
-
-def extract_identity(url: str) -> dict:
-    """
-    Identidade mínima (igual Fase 1).
-    """
     parsed = urlparse(url)
-    domain = parsed.netloc.replace("www.", "")
+    slug = parsed.path.replace("-", " ").replace("/", " ")
 
-    slug = parsed.path.replace("/", " ").replace("-", " ").strip()
+    blocked = bool(
+        page_title
+        and "just a moment" in page_title.lower()
+    )
 
     return {
-        "mod_name": slug.title() if slug else "Desconhecido",
-        "creator": domain,
-        "url_slug": slug.lower(),
-        "domain": domain,
+        "mod_name": og_title or page_title or slug,
+        "creator": og_site or parsed.netloc.replace("www.", ""),
+        "url_slug": slug,
+        "domain": parsed.netloc.replace("www.", ""),
+        "is_blocked": blocked
     }
 
+# =========================
+# SCORE CRUZADO POR EIXOS
+# =========================
 
-# ----------------------------------------------------------
+def score_against_notion(identity: dict) -> dict:
+    slug_tokens = tokenize(identity["url_slug"])
+    name_tokens = tokenize(identity["mod_name"])
+
+    all_input_tokens = set(slug_tokens + name_tokens)
+
+    results = []
+
+    for notion_name in NOTION_MODS:
+        notion_tokens = tokenize(notion_name)
+
+        common = set(notion_tokens) & all_input_tokens
+
+        score = 0.0
+        reasons = []
+
+        # EIXO 1 — Token semântico direto
+        if common:
+            score += 0.30 + 0.05 * len(common)
+            reasons.append(f"tokens em comum: {sorted(common)}")
+
+        # EIXO 2 — Token raro (ex: lgbtqia)
+        rare_tokens = [
+            t for t in common
+            if len(t) >= 6 or "+" in t
+        ]
+        if rare_tokens:
+            score += 0.20
+            reasons.append(f"tokens raros: {rare_tokens}")
+
+        # EIXO 3 — URL confirma tema
+        if any(t in slug_tokens for t in notion_tokens):
+            score += 0.15
+            reasons.append("URL confirma tema")
+
+        # EIXO 4 — Penalidade por ruído
+        noise = [t for t in slug_tokens if t.isdigit()]
+        if noise:
+            score -= 0.05
+
+        score = round(min(score, 1.0), 2)
+
+        results.append({
+            "notion_name": notion_name,
+            "score": score,
+            "debug": {
+                "slug_tokens": slug_tokens,
+                "name_tokens": name_tokens,
+                "notion_tokens": notion_tokens,
+                "common_tokens": list(common),
+                "reasons": reasons
+            }
+        })
+
+    best = max(results, key=lambda r: r["score"])
+
+    return {
+        "scores": results,
+        "best_match": best
+    }
+
+# =========================
 # UI
-# ----------------------------------------------------------
+# =========================
 
 st.title("🧪 Fase 2 (Sandbox): detecção de duplicatas")
 st.caption("⚠️ Não escreve no Notion. Apenas testes de score.")
 
-url_input = st.text_input("URL do mod")
+url = st.text_input("URL do mod")
 
-if st.button("Analisar"):
-    if not url_input.strip():
-        st.warning("Cole uma URL válida.")
-    else:
-        identity = extract_identity(url_input.strip())
-
-        # 🔴 MOCK de nomes do Notion (sandbox)
-        # depois isso vira query real
-        notion_candidates = [
-            "LGBTQIA+ / Gender & Orientation Overhaul",
-            "Mini-mods: Tweaks & Changes",
-            "Automatic Beard Shadows",
-        ]
-
-        scores = []
-
-        for notion_name in notion_candidates:
-            baseline = compute_similarity_baseline(
-                slug=identity["url_slug"],
-                notion_name=notion_name
-            )
-
-            scores.append({
-                "notion_name": notion_name,
-                "score": baseline["score"],
-                "debug": baseline["debug"],
-            })
-
-        best_match = max(scores, key=lambda x: x["score"])
-
-        st.session_state.analysis_result = {
-            "identity": identity,
-            "scores": scores,
-            "best_match": best_match,
-        }
-
-# ----------------------------------------------------------
-# RENDER RESULT
-# ----------------------------------------------------------
-
-result = st.session_state.analysis_result
-
-if result:
-    st.divider()
+if st.button("Analisar") and url.strip():
+    with st.spinner("Analisando..."):
+        html = fetch_page(url)
+        identity = extract_identity(html, url)
+        scoring = score_against_notion(identity)
 
     st.subheader("📦 Identidade")
-    st.write(f"**Mod:** {result['identity']['mod_name']}")
-    st.write(f"**Criador:** {result['identity']['creator']}")
+    st.write(f"**Mod:** {identity['mod_name']}")
+    st.write(f"**Criador:** {identity['creator']}")
 
     st.subheader("🔎 Verificação de duplicata")
 
-    score = result["best_match"]["score"]
+    score = scoring["best_match"]["score"]
 
     if score >= 0.6:
         st.error("🚨 Provável duplicata")
-    elif score >= 0.15:
-        st.warning("⚠️ Possível match (ambíguo)")
+    elif score >= 0.35:
+        st.warning("⚠️ Possível duplicata")
     else:
         st.success("✅ Provavelmente novo mod")
 
     st.write(f"**Score:** {score}")
-    st.write(f"**Possível match:** {result['best_match']['notion_name']}")
+    st.write(f"**Possível match:** {scoring['best_match']['notion_name']}")
 
     with st.expander("🔍 Debug detalhado"):
-        st.json(result)
+        st.json({
+            "identity": identity,
+            **scoring
+        })
 
-st.divider()
 
 # =========================
 # FOOTER
