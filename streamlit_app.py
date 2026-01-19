@@ -1,102 +1,60 @@
 # ============================================================
-# TS4 Mod Analyzer — Phase 2 (Sandbox)
-# Version: v3.6.2
-# Ironclad end-to-end (nenhum HTTPError derruba o app)
+# TS4 Mod Analyzer — Phase 1 + Phase 2 (Sandbox honesto)
+# Phase 1: v3.3 (INTACTA)
+# Phase 2: v3.5 (URL-first, sem mock, até 3 candidatos)
 # ============================================================
 
 import streamlit as st
 import requests
 import re
-import os
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
 # =========================
-# CONFIG STREAMLIT
+# SESSION STATE
+# =========================
+
+if "analysis_result" not in st.session_state:
+    st.session_state.analysis_result = None
+
+# =========================
+# CONFIG
 # =========================
 
 st.set_page_config(
-    page_title="TS4 Mod Analyzer — Phase 2 (Sandbox)",
+    page_title="TS4 Mod Analyzer — Phase 2",
     layout="centered"
 )
-
-# =========================
-# CONFIG GERAL
-# =========================
 
 REQUEST_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/120.0.0.0 Safari/537.36"
-    )
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
 STOPWORDS = {
-    "mod", "mods", "post", "posts", "v", "v1", "v2", "version",
-    "the", "and", "or", "for", "with", "by"
+    "mod", "mods", "the", "and", "or", "for", "with", "by"
 }
 
 # =========================
-# NOTION CONFIG
+# FETCH (Fase 1 — intacta)
 # =========================
-
-NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
-
-NOTION_API_URL = "https://api.notion.com/v1"
-NOTION_VERSION = "2022-06-28"
-
-NOTION_HEADERS = {
-    "Authorization": f"Bearer {NOTION_TOKEN}",
-    "Notion-Version": NOTION_VERSION,
-    "Content-Type": "application/json",
-}
-
-# =========================
-# HELPERS — FASE 1
-# =========================
-
-def clean_text(text: str) -> str:
-    text = text.lower()
-    text = re.sub(r"[^a-z0-9+ ]", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-def tokenize(text: str) -> list[str]:
-    return [
-        t for t in clean_text(text).split()
-        if t not in STOPWORDS and len(t) > 2
-    ]
 
 def fetch_page(url: str) -> str:
-    """
-    Fase 1 ironclad:
-    erro HTTP nunca quebra o app
-    """
-    try:
-        r = requests.get(url, headers=REQUEST_HEADERS, timeout=20)
-        return r.text
-    except requests.exceptions.RequestException:
-        return ""
+    response = requests.get(url, headers=REQUEST_HEADERS, timeout=20)
+    if response.status_code in (403, 429):
+        return response.text
+    response.raise_for_status()
+    return response.text
 
 # =========================
-# IDENTIDADE — FASE 1 (ORIGINAL)
+# FASE 1 — IDENTIDADE
 # =========================
 
 def extract_identity(html: str, url: str) -> dict:
-    parsed = urlparse(url)
-    slug = parsed.path.replace("-", " ").replace("/", " ")
-
-    if not html:
-        return {
-            "mod_name": slug,
-            "creator": parsed.netloc.replace("www.", ""),
-            "url_slug": slug,
-            "domain": parsed.netloc.replace("www.", ""),
-            "is_blocked": True
-        }
-
     soup = BeautifulSoup(html, "html.parser")
 
     page_title = soup.title.string.strip() if soup.title else None
@@ -105,142 +63,158 @@ def extract_identity(html: str, url: str) -> dict:
     og_site = None
     for meta in soup.find_all("meta"):
         if meta.get("property") == "og:title":
-            og_title = meta.get("content")
+            og_title = meta.get("content", "").strip()
         if meta.get("property") == "og:site_name":
-            og_site = meta.get("content")
+            og_site = meta.get("content", "").strip()
 
-    blocked = bool(
-        page_title
-        and "just a moment" in page_title.lower()
+    parsed = urlparse(url)
+    slug = parsed.path.strip("/").replace("-", " ").replace("/", " ").strip()
+
+    blocked_patterns = (
+        r"(just a moment|403 forbidden|access denied|cloudflare|"
+        r"checking your browser|patreon login)"
+    )
+
+    is_blocked = bool(
+        re.search(blocked_patterns, html.lower())
+        or (page_title and re.search(blocked_patterns, page_title.lower()))
     )
 
     return {
-        "mod_name": og_title or page_title or slug,
-        "creator": og_site or parsed.netloc.replace("www.", ""),
+        "page_title": page_title,
+        "og_title": og_title,
+        "og_site": og_site,
         "url_slug": slug,
+        "is_blocked": is_blocked,
         "domain": parsed.netloc.replace("www.", ""),
-        "is_blocked": blocked
     }
 
-# =========================
-# NOTION LOOKUP — FASE 2 (IRONCLAD)
-# =========================
+def normalize_name(raw: str) -> str:
+    if not raw:
+        return "—"
+    cleaned = re.sub(r"\s+", " ", raw).strip()
+    cleaned = re.sub(r"(by\s+[\w\s]+)$", "", cleaned, flags=re.I).strip()
+    return cleaned.title() if cleaned.islower() else cleaned
 
-def query_notion(identity: dict, limit: int = 3) -> list[dict]:
-    """
-    Lookup real no Notion.
-    Nunca levanta exceção.
-    Retorna até 3 candidatos ou lista vazia.
-    """
-
-    tokens = tokenize(identity["mod_name"]) + tokenize(identity["url_slug"])
-    search_text = " ".join(tokens[:5])
-
-    url = f"{NOTION_API_URL}/databases/{NOTION_DATABASE_ID}/query"
-
-    payload = {
-        "page_size": 10,
-        "filter": {
-            "or": [
-                {
-                    "property": "Name",
-                    "title": {"contains": search_text}
-                },
-                {
-                    "property": "Source URL",
-                    "url": {"contains": identity["domain"]}
-                }
-            ]
-        }
-    }
-
-    try:
-        r = requests.post(
-            url,
-            headers=NOTION_HEADERS,
-            json=payload,
-            timeout=20
-        )
-        data = r.json()
-    except Exception:
-        return []
-
-    pages = data.get("results", [])
-    candidates = []
-
-    for page in pages[:limit]:
-        props = page.get("properties", {})
-
-        title = "(sem título)"
-        if props.get("Name", {}).get("title"):
-            title = props["Name"]["title"][0]["plain_text"]
-
-        category = props.get("Category", {}).get("select", {})
-        priority = props.get("Priority", {}).get("select", {})
-
-        candidates.append({
-            "title": title,
-            "category": category.get("name") if category else None,
-            "priority": priority.get("name") if priority else None,
-            "url": page.get("url"),
-            "reason": "Match por nome / domínio"
-        })
-
-    return candidates
-
-def phase2(identity: dict) -> dict:
-    candidates = query_notion(identity)
-    count = len(candidates)
-
-    if count == 0:
-        status = "new_entry"
-    elif count == 1:
-        status = "unique_match"
-    elif count <= 3:
-        status = "ambiguous"
+def normalize_identity(identity: dict) -> dict:
+    if not identity["is_blocked"] and identity["page_title"]:
+        preferred = identity["page_title"]
+    elif identity["og_title"]:
+        preferred = identity["og_title"]
     else:
-        status = "too_ambiguous"
+        preferred = identity["url_slug"]
 
     return {
-        "status": status,
-        "candidates_found": count,
-        "candidates": candidates
+        "mod_name": normalize_name(preferred),
+        "creator": identity["og_site"] or identity["domain"],
+    }
+
+def analyze_url(url: str) -> dict:
+    html = fetch_page(url)
+    raw = extract_identity(html, url)
+    norm = normalize_identity(raw)
+
+    return {
+        "url": url,
+        "mod_name": norm["mod_name"],
+        "creator": norm["creator"],
+        "identity_debug": raw,
+    }
+
+# =========================
+# FASE 2 — MATCH REAL (URL FIRST)
+# =========================
+
+def clean_tokens(text: str) -> set:
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9 ]", " ", text)
+    tokens = {
+        t for t in text.split()
+        if t not in STOPWORDS and len(t) > 2
+    }
+    return tokens
+
+def normalize_url(u: str) -> str:
+    p = urlparse(u)
+    return f"{p.netloc}{p.path}".rstrip("/").lower()
+
+def phase2(identity: dict, notion_urls: list[str]) -> dict:
+    input_url_norm = normalize_url(identity["url"])
+    input_tokens = clean_tokens(identity["mod_name"])
+
+    candidates = []
+
+    for n_url in notion_urls:
+        n_url_norm = normalize_url(n_url)
+
+        score = 0.0
+        reasons = []
+
+        if input_url_norm == n_url_norm:
+            score += 0.7
+            reasons.append("URL idêntica")
+
+        name_from_url = urlparse(n_url).path.replace("-", " ")
+        notion_tokens = clean_tokens(name_from_url)
+
+        common = input_tokens & notion_tokens
+        if common:
+            score += 0.1 * len(common)
+            reasons.append(f"tokens em comum: {sorted(common)}")
+
+        if score > 0:
+            candidates.append({
+                "url": n_url,
+                "score": round(min(score, 1.0), 2),
+                "reasons": reasons
+            })
+
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+
+    return {
+        "status": "duplicate" if candidates else "new_entry",
+        "candidates_found": len(candidates),
+        "candidates": candidates[:3],
     }
 
 # =========================
 # UI
 # =========================
 
-st.title("🧪 Fase 2 (Sandbox): verificação no Notion")
-st.caption("⚠️ Read-only · até 3 possibilidades · sem decisão automática")
+st.title("🧪 TS4 Mod Analyzer — Phase 2 (Sandbox)")
+st.caption("Fase 1 intacta · Fase 2 honesta · Sem mock")
 
-url = st.text_input("URL do mod")
+url_input = st.text_input("URL do mod")
 
-if st.button("Analisar") and url.strip():
+notion_input = st.text_area(
+    "Cole URLs do Notion (uma por linha)",
+    placeholder="https://...\nhttps://..."
+)
+
+if st.button("Analisar") and url_input.strip():
     with st.spinner("Analisando..."):
-        html = fetch_page(url)
-        identity = extract_identity(html, url)
-        phase2_result = phase2(identity)
+        identity = analyze_url(url_input.strip())
+        notion_urls = [u.strip() for u in notion_input.splitlines() if u.strip()]
+        phase2_result = phase2(identity, notion_urls)
 
     st.subheader("📦 Identidade detectada")
     st.write(f"**Mod:** {identity['mod_name']}")
     st.write(f"**Criador:** {identity['creator']}")
-    st.write(f"**Domínio:** {identity['domain']}")
+    st.write(f"**Domínio:** {urlparse(identity['url']).netloc}")
 
-    if identity["is_blocked"]:
+    if identity["identity_debug"]["is_blocked"]:
         st.warning("⚠️ Página bloqueou leitura automática. Identidade baseada na URL.")
 
     st.subheader("🔎 Resultado da Fase 2")
-    st.write("**Status:**", phase2_result["status"])
-    st.write("**Candidatos encontrados:**", phase2_result["candidates_found"])
+    st.write(f"**Status:** {phase2_result['status']}")
+    st.write(f"**Candidatos encontrados:** {phase2_result['candidates_found']}")
 
-    if phase2_result["candidates_found"] > 0:
+    if phase2_result["candidates"]:
         for c in phase2_result["candidates"]:
             st.markdown(
-                f"- **[{c['title']}]({c['url']})**  \n"
-                f"  Categoria: {c['category'] or '—'} · "
-                f"Prioridade: {c['priority'] or '—'}  \n"
-                f"  Motivo: _{c['reason']}_"
+                f"- **Score {c['score']}** → "
+                f"[Abrir no Notion]({c['url']})  \n"
+                f"  _{', '.join(c['reasons'])}_"
             )
     else:
         st.success("Nenhuma entrada correspondente encontrada no Notion.")
@@ -252,7 +226,7 @@ if st.button("Analisar") and url.strip():
         })
 
 # =========================
-# FOOTER (RESTAURADO)
+# FOOTER (INTACTO)
 # =========================
 
 st.markdown(
@@ -261,9 +235,9 @@ st.markdown(
         <img src="https://64.media.tumblr.com/05d22b63711d2c391482d6faad367ccb/675ea15a79446393-0d/s2048x3072/cc918dd94012fe16170f2526549f3a0b19ecbcf9.png" 
              alt="Favicon" 
              style="height: 20px; vertical-align: middle; margin-right: 8px;">
-        Criado por Akin (@UnpaidSimmer) · v3.6.2 · Sandbox
+        Criado por Akin (@UnpaidSimmer)
         <div style="margin-top: 0.5rem; font-size: 0.75rem; opacity: 0.6;">
-            v3.5 lineage
+            v3.5 · Sandbox
         </div>
     </div>
     """,
