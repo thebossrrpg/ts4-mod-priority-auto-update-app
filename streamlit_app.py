@@ -1,7 +1,6 @@
 # ============================================================
-# TS4 Mod Analyzer — Phase 2 Sandbox
-# Version: v3.4
-# Purpose: Duplicate detection (NO Notion writes)
+# TS4 Mod Analyzer — Phase 2 (Sandbox)
+# Version: v3.4-sandbox (Notion secrets check + debug fix)
 # ============================================================
 
 import streamlit as st
@@ -9,6 +8,7 @@ import requests
 import re
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
+from difflib import SequenceMatcher
 
 # =========================
 # SESSION STATE
@@ -17,15 +17,12 @@ from bs4 import BeautifulSoup
 if "analysis_result" not in st.session_state:
     st.session_state.analysis_result = None
 
-if "duplication_result" not in st.session_state:
-    st.session_state.duplication_result = None
-
 # =========================
 # CONFIG
 # =========================
 
 st.set_page_config(
-    page_title="TS4 Mod Analyzer — v3.4",
+    page_title="TS4 Mod Analyzer — Phase 2 (Sandbox)",
     layout="centered"
 )
 
@@ -34,21 +31,25 @@ REQUEST_HEADERS = {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/120.0.0.0 Safari/537.36"
-    )
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
 # =========================
-# MOCK NOTION DATABASE
+# NOTION CONFIG (READ ONLY)
 # =========================
 
-MOCK_NOTION_DB = [
-    {"mod_name": "Mini Fixes", "creator": "Kuttoe"},
-    {"mod_name": "Small Bug Fixes", "creator": "LittleMsSam"},
-    {"mod_name": "Automatic Beard Shadows", "creator": "Someone"},
-]
+NOTION_TOKEN = st.secrets.get("NOTION_TOKEN")
+NOTION_DATABASE_ID = st.secrets.get("NOTION_DATABASE_ID")
+
+NOTION_HEADERS = {
+    "Authorization": f"Bearer {NOTION_TOKEN}",
+    "Notion-Version": "2022-06-28",
+    "Content-Type": "application/json",
+}
 
 # =========================
-# FETCH
+# FETCH PAGE
 # =========================
 
 def fetch_page(url: str) -> str:
@@ -59,7 +60,7 @@ def fetch_page(url: str) -> str:
     return response.text
 
 # =========================
-# PHASE 1 — IDENTITY
+# PHASE 1 — IDENTIDADE
 # =========================
 
 def extract_identity(html: str, url: str) -> dict:
@@ -99,93 +100,122 @@ def extract_identity(html: str, url: str) -> dict:
 
 def normalize_name(raw: str) -> str:
     if not raw:
-        return "—"
+        return ""
     cleaned = re.sub(r"\s+", " ", raw).strip()
     cleaned = re.sub(r"(by\s+[\w\s]+)$", "", cleaned, flags=re.I).strip()
-    return cleaned.title() if cleaned.islower() else cleaned
+    return cleaned.lower()
 
-def normalize_identity(identity: dict) -> dict:
-    if not identity["is_blocked"] and identity["page_title"]:
-        preferred = identity["page_title"]
-    elif identity["og_title"]:
-        preferred = identity["og_title"]
+def build_identity(identity_raw: dict) -> dict:
+    if not identity_raw["is_blocked"] and identity_raw["page_title"]:
+        name = identity_raw["page_title"]
+    elif identity_raw["og_title"]:
+        name = identity_raw["og_title"]
     else:
-        preferred = identity["url_slug"]
-
-    mod_name = normalize_name(preferred)
-    creator = identity["og_site"] or identity["domain"]
+        name = identity_raw["url_slug"]
 
     return {
-        "mod_name": mod_name,
-        "creator": creator or "—",
-    }
-
-def analyze_url(url: str) -> dict:
-    html = fetch_page(url)
-    raw = extract_identity(html, url)
-    norm = normalize_identity(raw)
-
-    return {
-        "url": url,
-        "mod_name": norm["mod_name"],
-        "creator": norm["creator"],
-        "identity_debug": raw,
+        "mod_name": name or "—",
+        "creator": identity_raw["og_site"] or identity_raw["domain"],
+        "normalized_name": normalize_name(name),
     }
 
 # =========================
-# PHASE 2 — DUPLICATE SCORE
+# NOTION — READ ONLY
+# =========================
+
+def query_notion_all() -> list:
+    if not NOTION_TOKEN or not NOTION_DATABASE_ID:
+        return []
+
+    url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
+    results = []
+    payload = {}
+
+    while True:
+        res = requests.post(url, headers=NOTION_HEADERS, json=payload)
+        res.raise_for_status()
+        data = res.json()
+
+        results.extend(data.get("results", []))
+
+        if not data.get("has_more"):
+            break
+
+        payload["start_cursor"] = data["next_cursor"]
+
+    return results
+
+def extract_notion_name(page: dict) -> str:
+    try:
+        title_prop = page["properties"]["Name"]["title"]
+        if title_prop:
+            return title_prop[0]["plain_text"]
+    except:
+        pass
+    return ""
+
+# =========================
+# DUPLICATE CHECK (LENIENT)
 # =========================
 
 def similarity(a: str, b: str) -> float:
     if not a or not b:
         return 0.0
-    a_words = set(a.lower().split())
-    b_words = set(b.lower().split())
-    common = a_words & b_words
-    return len(common) / max(len(a_words), 1)
+    return SequenceMatcher(None, a, b).ratio()
 
-def compute_match(candidate, existing):
-    score = 0.0
+def check_duplicates(identity: dict, notion_pages: list) -> dict:
+    best_score = 0.0
+    best_match = None
     reasons = []
 
-    name_score = similarity(candidate["mod_name"], existing["mod_name"])
-    if name_score > 0:
-        score += name_score * 0.4
-        reasons.append(f"Nome parecido ({name_score:.2f})")
+    for page in notion_pages:
+        notion_name = extract_notion_name(page)
+        score = similarity(identity["normalized_name"], normalize_name(notion_name))
 
-    if candidate["creator"] == existing["creator"]:
-        score += 0.2
-        reasons.append("Mesmo criador")
-
-    return round(score, 2), reasons
-
-def detect_duplicate(candidate):
-    best = None
-    best_score = 0
-    best_reasons = []
-
-    for entry in MOCK_NOTION_DB:
-        score, reasons = compute_match(candidate, entry)
         if score > best_score:
-            best = entry
             best_score = score
-            best_reasons = reasons
+            best_match = notion_name
+
+    if best_score > 0:
+        reasons.append(f"Nome parecido ({best_score:.2f})")
 
     return {
-        "best_score": best_score,
-        "best_match": best,
-        "reasons": best_reasons,
+        "score": round(best_score, 2),
+        "best_match": best_match,
+        "reasons": reasons,
+    }
+
+# =========================
+# ORQUESTRADOR
+# =========================
+
+def analyze_url(url: str) -> dict:
+    html = fetch_page(url)
+    raw = extract_identity(html, url)
+    identity = build_identity(raw)
+
+    notion_pages = query_notion_all()
+    dup = check_duplicates(identity, notion_pages)
+
+    return {
+        "identity": identity,
+        "identity_debug": raw,
+        "duplicate_check": dup,
+        "notion_connected": bool(NOTION_TOKEN and NOTION_DATABASE_ID),
     }
 
 # =========================
 # UI
 # =========================
 
-st.title("TS4 Mod Analyzer — v3.4")
-st.markdown(
-    "Fase 2 (Sandbox): **detecção de duplicatas**  \n"
-    "⚠️ Não escreve no Notion."
-)
+st.title("Fase 2 (Sandbox): detecção de duplicatas")
+st.warning("⚠️ Não escreve no Notion.")
+
+# -------- SECRETS STATUS --------
+
+with st.expander("🔐 Status dos secrets (diagnóstico)", expanded=True):
+    st.write("NOTION_TOKEN carregado:", bool(NOTION_TOKEN))
+    st.write("NOTION_DATABASE_ID carregado:", bool(NOTION_DATABASE_ID))
 
 url_input = st.text_input("URL do mod")
 
@@ -194,46 +224,40 @@ if st.button("Analisar"):
         st.warning("Cole uma URL válida.")
     else:
         with st.spinner("Analisando..."):
-            result = analyze_url(url_input.strip())
-            st.session_state.analysis_result = result
-            st.session_state.duplication_result = detect_duplicate(result)
+            st.session_state.analysis_result = analyze_url(url_input.strip())
 
-# =========================
-# RENDER
-# =========================
+# -------- RESULTADO --------
 
-if st.session_state.analysis_result:
-    r = st.session_state.analysis_result
-    d = st.session_state.duplication_result
+result = st.session_state.analysis_result
 
+if result:
     st.subheader("📦 Identidade")
-    st.write("**Mod:**", r["mod_name"])
-    st.write("**Criador:**", r["creator"])
+    st.write("Mod:", result["identity"]["mod_name"])
+    st.write("Criador:", result["identity"]["creator"])
 
-    st.subheader("🔎 Verificação de duplicata")
+    st.subheader("🔍 Verificação de duplicata")
 
-    if d["best_score"] >= 0.5:
-        st.error("⚠️ Alta chance de duplicata")
-    elif d["best_score"] >= 0.25:
-        st.warning("⚠️ Possível duplicata")
+    score = result["duplicate_check"]["score"]
+
+    if score >= 0.6:
+        st.error("🚨 Alta chance de duplicata")
+    elif score >= 0.3:
+        st.warning("⚠️ Zona cinza — revisar")
     else:
         st.success("✅ Provavelmente novo mod")
 
-    st.write("**Score:**", d["best_score"])
+    st.write("Score:", score)
 
-    if d["best_match"]:
-        st.write(
-            f"**Possível match:** {d['best_match']['mod_name']} — "
-            f"{d['best_match']['creator']}"
-        )
+    if result["duplicate_check"]["best_match"]:
+        st.write("Possível match:", result["duplicate_check"]["best_match"])
 
-    if d["reasons"]:
-        st.write("**Razões:**")
-        for r in d["reasons"]:
-            st.write("-", r)
+    if result["duplicate_check"]["reasons"]:
+        st.write("Razões:")
+        for r in result["duplicate_check"]["reasons"]:
+            st.write("•", r)
 
-    with st.expander("🔍 Debug Fase 1"):
-        st.json(r["identity_debug"])
+    with st.expander("🧪 Debug Fase 1"):
+        st.json(result["identity_debug"])
 
 # =========================
 # FOOTER
