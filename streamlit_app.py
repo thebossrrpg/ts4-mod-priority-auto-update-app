@@ -1,6 +1,6 @@
 # ============================================================
 # TS4 Mod Analyzer
-# Version: v3.2.2 (fix NameError + layout limpo + robustez)
+# Version: v3.2.3 (fix NameError + layout limpo + robustez)
 # ============================================================
 
 import streamlit as st
@@ -39,7 +39,12 @@ def fetch_page(url: str) -> str:
 
 def extract_identity(html: str, url: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
-    page_title = soup.title.string.strip() if soup.title else None
+
+    page_title = (
+        soup.title.get_text(strip=True)
+        if soup.title
+        else None
+    )
 
     og_title = None
     og_site = None
@@ -52,9 +57,11 @@ def extract_identity(html: str, url: str) -> dict:
     parsed = urlparse(url)
     slug = parsed.path.strip('/').replace('-', ' ').replace('/', ' ').strip()
 
-    blocked_patterns = r"(just a moment|just a moment\.\.\.|403 forbidden|access denied|cloudflare|checking your browser|patreon login)"
-    is_blocked = bool(re.search(blocked_patterns, html.lower())) or \
-                 (page_title and re.search(blocked_patterns, page_title.lower()))
+    blocked_patterns = r"(just a moment|403 forbidden|access denied|cloudflare|checking your browser|patreon login)"
+    is_blocked = bool(
+        re.search(blocked_patterns, html.lower()) or
+        (page_title and re.search(blocked_patterns, page_title.lower()))
+    )
 
     return {
         "page_title": page_title,
@@ -64,6 +71,7 @@ def extract_identity(html: str, url: str) -> dict:
         "is_blocked": is_blocked,
         "domain": parsed.netloc.replace("www.", "")
     }
+
 
 def normalize_name(raw: str) -> str:
     try:
@@ -141,7 +149,7 @@ def add_credits_footer():
             </a>
         </div>
         <div style="margin-top: 0.8rem; font-size: 0.75rem; opacity: 0.7;">
-            v3.2.2
+            v3.2.3
         </div>
     </div>
     """
