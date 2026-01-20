@@ -1,7 +1,17 @@
 # ============================================================
-# TS4 Mod Analyzer — Phase 1 → Fase 2.0 (Notion Integration)
-# Version: v3.3.0
+# TS4 Mod Analyzer — Phase 1 → Phase 2 (Notion Integration)
+# Version: v3.3.1
+#
+# Status:
+# - Phase 1: Stable (ironclad)
+# - Phase 2: Functional
+#
+# Notes:
+# - Nenhuma decisão automática
+# - Notion é a base canônica
+# - Escrita ocorre apenas sob ação humana
 # ============================================================
+
 
 import streamlit as st
 import requests
@@ -22,7 +32,7 @@ if "analysis_result" not in st.session_state:
 # =========================
 
 st.set_page_config(
-    page_title="TS4 Mod Analyzer — Phase 1",
+    page_title="TS4 Mod Analyzer — Phases 1–2 · v3.3.1",
     layout="centered"
 )
 
@@ -270,9 +280,10 @@ st.markdown(
              style="height: 20px; vertical-align: middle; margin-right: 8px;">
         Criado por Akin (@UnpaidSimmer)
         <div style="margin-top: 0.5rem; font-size: 0.75rem; opacity: 0.6;">
-            v3.3.0
+            v3.3.1 · Phase 2 funcional · Notion real
         </div>
     </div>
     """,
     unsafe_allow_html=True
 )
+
