@@ -162,7 +162,7 @@ def search_notion_duplicate(url: str, mod_name: str, creator: str) -> dict | Non
             database_id=NOTION_DATABASE_ID,
             filter={
                 "and": [
-                    {"property": "Name", "title": {"contains": mod_name}},
+                    {"property": "Filename", "title": {"contains": mod_name}},
                     {"property": "Creator", "rich_text": {"contains": creator}}
                 ]
             }
@@ -203,7 +203,7 @@ def create_notion_entry(mod_name: str, creator: str, url: str):
         notion.pages.create(
             parent={"database_id": NOTION_DATABASE_ID},
             properties={
-                "Name": {"title": [{"text": {"content": mod_name}}]},
+                "Filename": {"title": [{"text": {"content": mod_name}}]},
                 "Creator": {"rich_text": [{"text": {"content": creator}}]},
                 "URL": {"url": url},
                 "Slug": {"rich_text": [{"text": {"content": slug}}]},
