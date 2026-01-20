@@ -1,57 +1,53 @@
 # ============================================================
-# TS4 Mod Analyzer — Phase 1 + Phase 2 (Sandbox honesto)
-# Phase 1: v3.3 (INTACTA)
-# Phase 2: v3.5 (URL-first, sem mock, até 3 candidatos)
+# TS4 Mod Analyzer — Phase 2 (Com Cruzamento Real)
+# Version: v3.5 (Com Notion real, cruzamento total de dados)
 # ============================================================
 
-import streamlit as st
-import requests
+import os
 import re
+import requests
+import streamlit as st
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
-
-# =========================
-# SESSION STATE
-# =========================
-
-if "analysis_result" not in st.session_state:
-    st.session_state.analysis_result = None
 
 # =========================
 # CONFIG
 # =========================
 
-st.set_page_config(
-    page_title="TS4 Mod Analyzer — Phase 2",
-    layout="centered"
-)
+NOTION_TOKEN = os.getenv("NOTION_TOKEN")
+NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 
-REQUEST_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-}
+NOTION_API_URL = "https://api.notion.com/v1"
+NOTION_VERSION = "2022-06-28"
 
-STOPWORDS = {
-    "mod", "mods", "the", "and", "or", "for", "with", "by"
+NOTION_HEADERS = {
+    "Authorization": f"Bearer {NOTION_TOKEN}",
+    "Notion-Version": NOTION_VERSION,
+    "Content-Type": "application/json",
 }
 
 # =========================
-# FETCH (Fase 1 — intacta)
+# HELPERS
 # =========================
 
-def fetch_page(url: str) -> str:
-    response = requests.get(url, headers=REQUEST_HEADERS, timeout=20)
-    if response.status_code in (403, 429):
-        return response.text
-    response.raise_for_status()
-    return response.text
+def normalize_url(url: str) -> str:
+    if not url:
+        return ""
+    url = url.strip()
+    url = re.sub(r"#.*$", "", url)
+    url = re.sub(r"\?.*$", "", url)
+    if url.endswith("/"):
+        url = url[:-1]
+    return url.lower()
+
+def extract_domain(url: str) -> str:
+    try:
+        return urlparse(url).netloc.lower()
+    except Exception:
+        return ""
 
 # =========================
-# FASE 1 — IDENTIDADE
+# FASE 1 — IDENTIDADE (INTACTA)
 # =========================
 
 def extract_identity(html: str, url: str) -> dict:
@@ -122,59 +118,86 @@ def analyze_url(url: str) -> dict:
     }
 
 # =========================
-# FASE 2 — MATCH REAL (URL FIRST)
+# NOTION QUERY — FASE 2 (COM NOTION REAL)
 # =========================
 
-def clean_tokens(text: str) -> set:
-    text = text.lower()
-    text = re.sub(r"[^a-z0-9 ]", " ", text)
-    tokens = {
-        t for t in text.split()
-        if t not in STOPWORDS and len(t) > 2
-    }
-    return tokens
+def fetch_all_notion_pages() -> list:
+    url = f"{NOTION_API_URL}/databases/{NOTION_DATABASE_ID}/query"
+    results = []
+    payload = {}
 
-def normalize_url(u: str) -> str:
-    p = urlparse(u)
-    return f"{p.netloc}{p.path}".rstrip("/").lower()
+    while True:
+        r = requests.post(url, headers=NOTION_HEADERS, json=payload)
+        if r.status_code != 200:
+            return {"error": r.text}
 
-def phase2(identity: dict, notion_urls: list[str]) -> dict:
-    input_url_norm = normalize_url(identity["url"])
-    input_tokens = clean_tokens(identity["mod_name"])
+        data = r.json()
+        results.extend(data.get("results", []))
 
-    candidates = []
+        if not data.get("has_more"):
+            break
 
-    for n_url in notion_urls:
-        n_url_norm = normalize_url(n_url)
+        payload["start_cursor"] = data["next_cursor"]
 
-        score = 0.0
-        reasons = []
+    return results
 
-        if input_url_norm == n_url_norm:
-            score += 0.7
-            reasons.append("URL idêntica")
 
-        name_from_url = urlparse(n_url).path.replace("-", " ")
-        notion_tokens = clean_tokens(name_from_url)
+def extract_properties_from_page(page: dict) -> dict:
+    properties = {}
 
-        common = input_tokens & notion_tokens
-        if common:
-            score += 0.1 * len(common)
-            reasons.append(f"tokens em comum: {sorted(common)}")
+    props = page.get("properties", {})
+    properties["title"] = props.get("Name", {}).get("title", [{}])[0].get("plain_text", "")
+    properties["category"] = props.get("Category", {}).get("select", {}).get("name", "—")
+    properties["priority"] = props.get("Priority", {}).get("select", {}).get("name", "—")
+    properties["url"] = next((v["url"] for v in props.values() if v.get("url")), "")
 
-        if score > 0:
-            candidates.append({
-                "url": n_url,
-                "score": round(min(score, 1.0), 2),
-                "reasons": reasons
+    return properties
+
+
+def phase2(identity: dict) -> dict:
+    target_url = normalize_url(identity["url"])
+
+    pages = fetch_all_notion_pages()
+    if isinstance(pages, dict) and "error" in pages:
+        return {
+            "status": "error",
+            "error": pages["error"],
+            "candidates": [],
+        }
+
+    matches = []
+
+    for page in pages:
+        props = extract_properties_from_page(page)
+
+        notion_url = normalize_url(props["url"])
+
+        # Verificação de correspondência de URL
+        if notion_url == target_url:
+            matches.append({
+                "page_id": page["id"],
+                "notion_url": notion_url,
+                "mod_name": props["title"],
+                "creator": props["category"],
+                "priority": props["priority"],
+                "reason": "URL idêntica"
             })
 
-    candidates.sort(key=lambda x: x["score"], reverse=True)
+        # Verificação de correspondência de nome
+        if identity["mod_name"].lower() in props["title"].lower():
+            matches.append({
+                "page_id": page["id"],
+                "notion_url": notion_url,
+                "mod_name": props["title"],
+                "creator": props["category"],
+                "priority": props["priority"],
+                "reason": "Nome similar"
+            })
 
     return {
-        "status": "duplicate" if candidates else "new_entry",
-        "candidates_found": len(candidates),
-        "candidates": candidates[:3],
+        "status": "duplicate" if matches else "new_entry",
+        "candidates_found": len(matches),
+        "candidates": matches[:3],
     }
 
 # =========================
@@ -186,16 +209,10 @@ st.caption("Fase 1 intacta · Fase 2 honesta · Sem mock")
 
 url_input = st.text_input("URL do mod")
 
-notion_input = st.text_area(
-    "Cole URLs do Notion (uma por linha)",
-    placeholder="https://...\nhttps://..."
-)
-
 if st.button("Analisar") and url_input.strip():
     with st.spinner("Analisando..."):
         identity = analyze_url(url_input.strip())
-        notion_urls = [u.strip() for u in notion_input.splitlines() if u.strip()]
-        phase2_result = phase2(identity, notion_urls)
+        phase2_result = phase2(identity)
 
     st.subheader("📦 Identidade detectada")
     st.write(f"**Mod:** {identity['mod_name']}")
@@ -212,9 +229,8 @@ if st.button("Analisar") and url_input.strip():
     if phase2_result["candidates"]:
         for c in phase2_result["candidates"]:
             st.markdown(
-                f"- **Score {c['score']}** → "
-                f"[Abrir no Notion]({c['url']})  \n"
-                f"  _{', '.join(c['reasons'])}_"
+                f"- **[Abrir no Notion]({c['notion_url']})**  \n"
+                f"  _{c['mod_name']} · {c['creator']} · {c['priority']}_"
             )
     else:
         st.success("Nenhuma entrada correspondente encontrada no Notion.")
@@ -226,7 +242,7 @@ if st.button("Analisar") and url_input.strip():
         })
 
 # =========================
-# FOOTER (INTACTO)
+# FOOTER (INCLUÍDO)
 # =========================
 
 st.markdown(
