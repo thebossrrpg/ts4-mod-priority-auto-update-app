@@ -1,6 +1,6 @@
 streamlit
 requests
 beautifulsoup4
-notion-client
+notion-client==2.2.0
 rapidfuzz
 google-genai
