@@ -133,27 +133,34 @@ def analyze_url(url: str) -> dict:
 # NOTION – BUSCA DUPLICATA
 # =========================
 
+# Busca duplicata (atualizado para compatibilidade 2.7.0+)
 def search_notion_duplicate(url: str, mod_name: str, creator: str) -> dict | None:
     try:
-        # 1. URL exata
-        resp = notion.databases.query(
+        # 1. Busca por URL exata
+        response = notion.databases.query(
             database_id=NOTION_DATABASE_ID,
-            filter={"property": "URL", "url": {"equals": url}}
+            filter={
+                "property": "URL",
+                "url": {"equals": url}
+            }
         )
-        if resp["results"]:
-            return resp["results"][0]
+        if response["results"]:
+            return response["results"][0]
 
-        # 2. Slug aproximado
+        # 2. Busca por slug aproximado
         slug = urlparse(url).path.strip('/').replace('-', ' ').lower()
-        resp_slug = notion.databases.query(
+        response_slug = notion.databases.query(
             database_id=NOTION_DATABASE_ID,
-            filter={"property": "Slug", "rich_text": {"contains": slug}}
+            filter={
+                "property": "Slug",
+                "rich_text": {"contains": slug}
+            }
         )
-        if resp_slug["results"]:
-            return resp_slug["results"][0]
+        if response_slug["results"]:
+            return response_slug["results"][0]
 
-        # 3. Nome + Criador aproximado
-        resp_name = notion.databases.query(
+        # 3. Busca por nome + criador aproximado
+        response_name = notion.databases.query(
             database_id=NOTION_DATABASE_ID,
             filter={
                 "and": [
@@ -162,8 +169,8 @@ def search_notion_duplicate(url: str, mod_name: str, creator: str) -> dict | Non
                 ]
             }
         )
-        if resp_name["results"]:
-            return resp_name["results"][0]
+        if response_name["results"]:
+            return response_name["results"][0]
 
         return None
     except Exception as e:
@@ -174,6 +181,7 @@ def search_notion_duplicate(url: str, mod_name: str, creator: str) -> dict | Non
 # NOTION – CRIAR ENTRADA
 # =========================
 
+# Criação de página (atualizado para compatibilidade)
 def create_notion_entry(mod_name: str, creator: str, url: str):
     try:
         slug = urlparse(url).path.strip('/').replace('-', ' ').lower()[:50]
