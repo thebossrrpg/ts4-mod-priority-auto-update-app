@@ -136,7 +136,7 @@ def analyze_url(url: str) -> dict:
 # Busca duplicata (atualizado para compatibilidade 2.7.0+)
 def search_notion_duplicate(url: str, mod_name: str, creator: str) -> dict | None:
     try:
-        # 1. Busca por URL exata
+        # 1. Busca por URL exata (prioridade máxima)
         response = notion.databases.query(
             database_id=NOTION_DATABASE_ID,
             filter={
@@ -147,19 +147,7 @@ def search_notion_duplicate(url: str, mod_name: str, creator: str) -> dict | Non
         if response["results"]:
             return response["results"][0]
 
-        # 2. Busca por slug aproximado
-        slug = urlparse(url).path.strip('/').replace('-', ' ').lower()
-        response_slug = notion.databases.query(
-            database_id=NOTION_DATABASE_ID,
-            filter={
-                "property": "Slug",
-                "rich_text": {"contains": slug}
-            }
-        )
-        if response_slug["results"]:
-            return response_slug["results"][0]
-
-        # 3. Busca por nome + criador aproximado
+        # 2. Busca por nome + criador (fallback mais confiável)
         response_name = notion.databases.query(
             database_id=NOTION_DATABASE_ID,
             filter={
@@ -171,6 +159,22 @@ def search_notion_duplicate(url: str, mod_name: str, creator: str) -> dict | Non
         )
         if response_name["results"]:
             return response_name["results"][0]
+
+        # 3. Busca por slug (opcional, só se a propriedade existir)
+        try:
+            slug = urlparse(url).path.strip('/').replace('-', ' ').lower()
+            response_slug = notion.databases.query(
+                database_id=NOTION_DATABASE_ID,
+                filter={
+                    "property": "Slug",  # Se não existir, pula sem crash
+                    "rich_text": {"contains": slug}
+                }
+            )
+            if response_slug["results"]:
+                return response_slug["results"][0]
+        except Exception as slug_err:
+            # Ignora silenciosamente se propriedade "Slug" não existir
+            pass
 
         return None
     except Exception as e:
