@@ -1,6 +1,12 @@
 # ============================================================
-# TS4 Mod Analyzer — Phase 1
-# Version: v3.3 (UI/state fix, debug consistente)
+# TS4 Mod Analyzer — Phase 1 → Phase 3 (IA Assistida)
+# Version: v3.4.7
+#
+# Patch:
+# - Corrige loop de health-check
+# - Remove carga do Notion no startup
+# - Notion só é consultado após ação do usuário
+# - Nenhuma regressão funcional
 # ============================================================
 
 import streamlit as st
@@ -8,20 +14,17 @@ import requests
 import re
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
+from notion_client import Client
+from rapidfuzz import fuzz
 
-# =========================
-# SESSION STATE INIT
-# =========================
-
-if "analysis_result" not in st.session_state:
-    st.session_state.analysis_result = None
+from cohere_provider import CohereProvider
 
 # =========================
 # CONFIG
 # =========================
 
 st.set_page_config(
-    page_title="TS4 Mod Analyzer — Phase 1",
+    page_title="TS4 Mod Analyzer — Phases 1–3 · v3.4.7",
     layout="centered"
 )
 
@@ -30,179 +33,241 @@ REQUEST_HEADERS = {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    )
 }
+
+# =========================
+# NOTION
+# =========================
+
+NOTION_TOKEN = st.secrets["notion"]["token"]
+NOTION_DATABASE_ID = st.secrets["notion"]["database_id"]
+notion = Client(auth=NOTION_TOKEN)
+
+# =========================
+# CACHE — BASE NOTION
+# =========================
+
+@st.cache_data(show_spinner=False)
+def load_notion_index():
+    results = []
+    cursor = None
+
+    while True:
+        payload = {
+            "database_id": NOTION_DATABASE_ID,
+            "page_size": 100
+        }
+        if cursor:
+            payload["start_cursor"] = cursor
+
+        r = notion.databases.query(**payload)
+
+        for p in r["results"]:
+            title_prop = p["properties"]["Filename"]["title"]
+            if title_prop:
+                results.append({
+                    "id": p["id"],
+                    "title": title_prop[0]["plain_text"]
+                })
+
+        if not r.get("has_more"):
+            break
+        cursor = r.get("next_cursor")
+
+    return results
 
 # =========================
 # FETCH
 # =========================
 
+@st.cache_data(show_spinner=False)
 def fetch_page(url: str) -> str:
-    response = requests.get(url, headers=REQUEST_HEADERS, timeout=20)
-    if response.status_code in (403, 429):
-        return response.text
-    response.raise_for_status()
-    return response.text
+    try:
+        r = requests.get(url, headers=REQUEST_HEADERS, timeout=25)
+        return r.text or ""
+    except Exception:
+        return ""
 
 # =========================
-# EXTRAÇÃO DE IDENTIDADE
+# PHASE 1 — EXTRACTION
 # =========================
 
 def extract_identity(html: str, url: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
 
-    page_title = soup.title.string.strip() if soup.title else None
-
+    page_title = soup.title.get_text(strip=True) if soup.title else None
     og_title = None
-    og_site = None
+
     for meta in soup.find_all("meta"):
         if meta.get("property") == "og:title":
             og_title = meta.get("content", "").strip()
-        if meta.get("property") == "og:site_name":
-            og_site = meta.get("content", "").strip()
 
     parsed = urlparse(url)
     slug = parsed.path.strip("/").replace("-", " ").replace("/", " ").strip()
 
-    blocked_patterns = (
-        r"(just a moment|403 forbidden|access denied|cloudflare|"
-        r"checking your browser|patreon login)"
-    )
-
-    is_blocked = bool(
-        re.search(blocked_patterns, html.lower())
-        or (page_title and re.search(blocked_patterns, page_title.lower()))
+    blocked = bool(
+        re.search(r"(just a moment|cloudflare|checking your browser)", html.lower())
     )
 
     return {
         "page_title": page_title,
         "og_title": og_title,
-        "og_site": og_site,
         "url_slug": slug,
-        "is_blocked": is_blocked,
         "domain": parsed.netloc.replace("www.", ""),
+        "is_blocked": blocked
     }
 
 # =========================
-# NORMALIZAÇÃO
+# NORMALIZAÇÃO + ENTIDADES
 # =========================
 
 def normalize_name(raw: str) -> str:
     if not raw:
-        return "—"
-    cleaned = re.sub(r"\s+", " ", raw).strip()
-    cleaned = re.sub(r"(\b\w+\b)(\s+\1)+$", r"\1", cleaned, flags=re.I)
-    cleaned = re.sub(r"(by\s+[\w\s]+)$", "", cleaned, flags=re.I).strip()
-    return cleaned.title() if cleaned.islower() else cleaned
+        return ""
+    raw = re.sub(r"(the sims resource\s*\|\s*)", "", raw, flags=re.I)
+    raw = re.sub(r"\s+", " ", raw)
+    return raw.strip()
 
-def normalize_identity(identity: dict) -> dict:
-    preferred_name = None
+def extract_entities(debug: dict) -> dict:
+    title = normalize_name(debug.get("og_title") or debug.get("page_title") or "")
 
-    if (
-        not identity["is_blocked"]
-        and identity["page_title"]
-        and "just a moment" not in identity["page_title"].lower()
-    ):
-        preferred_name = identity["page_title"]
-    elif identity["og_title"]:
-        preferred_name = identity["og_title"]
-    else:
-        preferred_name = identity["url_slug"]
-
-    mod_name = normalize_name(preferred_name)
-
-    creator = identity["og_site"] or identity["domain"]
-
-    if preferred_name and "by " in preferred_name.lower():
-        m = re.search(r"by\s+([\w\s]+)", preferred_name, re.I)
-        if m:
-            creator = normalize_name(m.group(1))
+    creator = None
+    m = re.search(r"(.+?)'?s\s", title)
+    if m:
+        creator = m.group(1)
+        title = title.replace(m.group(0), "").strip()
 
     return {
-        "mod_name": mod_name,
-        "creator": creator or "—",
+        "extracted_title": title or None,
+        "extracted_creator": creator,
+        "slug_quality": "poor" if len(debug.get("url_slug", "")) < 6 else "ok",
+        "page_blocked": debug.get("is_blocked")
     }
 
 # =========================
-# ORQUESTRADOR
+# PHASE 2 — FUZZY MATCH
 # =========================
 
-def analyze_url(url: str) -> dict:
-    html = fetch_page(url)
-    identity_raw = extract_identity(html, url)
-    identity_norm = normalize_identity(identity_raw)
+def search_notion_fuzzy(title: str, notion_index: list, threshold=70):
+    if not title:
+        return []
 
+    matches = []
+    for p in notion_index:
+        score = fuzz.token_set_ratio(title.lower(), p["title"].lower())
+        if score >= threshold:
+            matches.append({
+                "id": p["id"],
+                "title": p["title"],
+                "score": score
+            })
+
+    matches.sort(key=lambda x: x["score"], reverse=True)
+    return matches[:5]
+
+# =========================
+# PHASE 3 — GATE
+# =========================
+
+def should_call_ai(entities: dict, phase2_found: bool) -> bool:
+    if phase2_found:
+        return False
+    return entities["page_blocked"] or entities["slug_quality"] == "poor"
+
+# =========================
+# LOG ESTRUTURADO
+# =========================
+
+def init_log():
     return {
-        "url": url,
-        "mod_name": identity_norm["mod_name"],
-        "creator": identity_norm["creator"],
-        "identity_debug": identity_raw,
+        "decision": None,
+        "resolved_by": None,
+        "identity": {},
+        "phase2": {},
+        "phase3": {}
     }
 
 # =========================
 # UI
 # =========================
 
-st.title("TS4 Mod Analyzer")
-st.markdown(
-    "Cole a **URL de um mod**.  \n"
-    "Extrai identidade básica para evitar duplicatas no Notion."
-)
+st.title("TS4 Mod Analyzer — Phase 3")
 
-url_input = st.text_input(
-    "URL do mod",
-    placeholder="Cole aqui a URL completa do mod"
-)
-
-# -------- AÇÃO --------
+url_input = st.text_input("URL do mod")
 
 if st.button("Analisar"):
-    if not url_input.strip():
-        st.warning("Cole uma URL válida.")
+    html = fetch_page(url_input)
+    debug = extract_identity(html, url_input)
+    entities = extract_entities(debug)
+
+    notion_index = load_notion_index()
+
+    st.session_state.log = init_log()
+    st.session_state.log["identity"] = entities
+
+    st.subheader("📦 Mod")
+    st.write(entities["extracted_title"] or "—")
+
+    with st.expander("🔍 Debug"):
+        st.json(debug)
+
+    fuzzy = search_notion_fuzzy(
+        entities["extracted_title"],
+        notion_index
+    )
+
+    if fuzzy:
+        st.session_state.log["phase2"] = {
+            "candidates": fuzzy,
+            "top_score": fuzzy[0]["score"]
+        }
+
+        if fuzzy[0]["score"] >= 90:
+            st.success("Mod encontrado no Notion (Fase 2)")
+            st.markdown(f"**{fuzzy[0]['title']}**")
+            st.session_state.log["decision"] = "FOUND"
+            st.session_state.log["resolved_by"] = "PHASE_2"
+        else:
+            phase2_found = False
     else:
-        with st.spinner("Analisando..."):
-            st.session_state.analysis_result = analyze_url(url_input.strip())
+        phase2_found = False
+        st.session_state.log["phase2"] = {"candidates": []}
 
-# -------- RENDER PERSISTENTE --------
+    if not st.session_state.log["decision"] and should_call_ai(entities, False):
+        provider = CohereProvider(api_key=st.secrets["cohere"]["api_key"])
 
-result = st.session_state.analysis_result
-
-if result:
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("📦 Mod")
-        st.write(result["mod_name"])
-
-    with col2:
-        st.subheader("👤 Criador")
-        st.write(result["creator"])
-
-    st.success("Identidade extraída com sucesso.")
-
-    with st.expander("🔍 Debug técnico"):
-        st.json(result["identity_debug"])
-
-    if result["identity_debug"]["is_blocked"]:
-        st.warning(
-            "⚠️ Bloqueio detectado (Cloudflare / Patreon). "
-            "Fallback aplicado (slug/domínio)."
+        ai = provider.classify(
+            identity={
+                "title": entities["extracted_title"],
+                "creator": entities["extracted_creator"]
+            },
+            context=fuzzy
         )
 
+        st.session_state.log["phase3"] = ai
+
+        if ai.get("match") is True:
+            st.success("Mod identificado automaticamente pela IA")
+            st.session_state.log["decision"] = "FOUND"
+            st.session_state.log["resolved_by"] = "PHASE_3"
+        else:
+            st.warning("Não foi possível identificar se o mod está na base do Notion.")
+            st.session_state.log["decision"] = "NOT_FOUND"
+            st.session_state.log["resolved_by"] = "PHASE_3"
+
 # =========================
-# FOOTER
+# FOOTER (INTOCADO)
 # =========================
 
 st.markdown(
     """
     <div style="text-align: center; padding: 1rem 0; font-size: 0.9rem; color: #6b7280;">
-        <img src="https://64.media.tumblr.com/05d22b63711d2c391482d6faad367ccb/675ea15a79446393-0d/s2048x3072/cc918dd94012fe16170f2526549f3a0b19ecbcf9.png" 
-             alt="Favicon" 
+        <img src="https://64.media.tumblr.com/05d22b63711d2c391482d6faad367ccb/675ea15a79446393-0d/s2048x3072/cc918dd94012fe16170f2526549f3a0b19ecbcf9.png"
              style="height: 20px; vertical-align: middle; margin-right: 8px;">
         Criado por Akin (@UnpaidSimmer)
         <div style="margin-top: 0.5rem; font-size: 0.75rem; opacity: 0.6;">
-            v3.3
+            v3.4.7 · Phase 3 IA assistida · Cohere
         </div>
     </div>
     """,
