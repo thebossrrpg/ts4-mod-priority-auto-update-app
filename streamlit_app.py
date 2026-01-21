@@ -3,15 +3,14 @@
 # Version: v3.4.7
 #
 # Patch:
-# - Corrige loop de health-check
-# - Remove carga do Notion no startup
-# - Notion só é consultado após ação do usuário
-# - Nenhuma regressão funcional
+# - Correção de loop de startup (NameError)
+# - Consumo correto do cache do Notion
 # ============================================================
 
 import streamlit as st
 import requests
 import re
+import json
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from notion_client import Client
@@ -76,6 +75,10 @@ def load_notion_index():
         cursor = r.get("next_cursor")
 
     return results
+
+@st.cache_data(show_spinner=False)
+def get_notion_index():
+    return load_notion_index()
 
 # =========================
 # FETCH
@@ -201,22 +204,39 @@ if st.button("Analisar"):
     debug = extract_identity(html, url_input)
     entities = extract_entities(debug)
 
-    notion_index = load_notion_index()
-
     st.session_state.log = init_log()
     st.session_state.log["identity"] = entities
 
+    st.session_state.result = {
+        "url": url_input,
+        "entities": entities,
+        "debug": debug
+    }
+
+# =========================
+# RESULT
+# =========================
+
+res = st.session_state.get("result")
+
+if res:
+    ent = res["entities"]
+
     st.subheader("📦 Mod")
-    st.write(entities["extracted_title"] or "—")
+    st.write(ent["extracted_title"] or "—")
 
     with st.expander("🔍 Debug"):
-        st.json(debug)
+        st.json(res["debug"])
+
+    # 🔧 CORREÇÃO DO LOOP: definição explícita
+    notion_index = get_notion_index()
 
     fuzzy = search_notion_fuzzy(
-        entities["extracted_title"],
+        ent["extracted_title"],
         notion_index
     )
 
+    # -------- PHASE 2 --------
     if fuzzy:
         st.session_state.log["phase2"] = {
             "candidates": fuzzy,
@@ -226,26 +246,28 @@ if st.button("Analisar"):
         if fuzzy[0]["score"] >= 90:
             st.success("Mod encontrado no Notion (Fase 2)")
             st.markdown(f"**{fuzzy[0]['title']}**")
+
             st.session_state.log["decision"] = "FOUND"
             st.session_state.log["resolved_by"] = "PHASE_2"
-        else:
-            phase2_found = False
     else:
-        phase2_found = False
         st.session_state.log["phase2"] = {"candidates": []}
 
-    if not st.session_state.log["decision"] and should_call_ai(entities, False):
+    # -------- PHASE 3 --------
+    if not st.session_state.log["decision"] and should_call_ai(ent, False):
         provider = CohereProvider(api_key=st.secrets["cohere"]["api_key"])
 
-        ai = provider.classify(
-            identity={
-                "title": entities["extracted_title"],
-                "creator": entities["extracted_creator"]
-            },
-            context=fuzzy
-        )
+        identity_ai = {
+            "title": ent["extracted_title"],
+            "creator": ent["extracted_creator"]
+        }
 
-        st.session_state.log["phase3"] = ai
+        ai = provider.classify(identity_ai, context=fuzzy)
+
+        st.session_state.log["phase3"] = {
+            "match": ai.get("match"),
+            "confidence": ai.get("confidence"),
+            "reason": ai.get("reason")
+        }
 
         if ai.get("match") is True:
             st.success("Mod identificado automaticamente pela IA")
@@ -263,8 +285,6 @@ if st.button("Analisar"):
 st.markdown(
     """
     <div style="text-align: center; padding: 1rem 0; font-size: 0.9rem; color: #6b7280;">
-        <img src="https://64.media.tumblr.com/05d22b63711d2c391482d6faad367ccb/675ea15a79446393-0d/s2048x3072/cc918dd94012fe16170f2526549f3a0b19ecbcf9.png"
-             style="height: 20px; vertical-align: middle; margin-right: 8px;">
         Criado por Akin (@UnpaidSimmer)
         <div style="margin-top: 0.5rem; font-size: 0.75rem; opacity: 0.6;">
             v3.4.7 · Phase 3 IA assistida · Cohere
