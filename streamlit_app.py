@@ -1,329 +1,142 @@
 # ============================================================
-# TS4 Mod Analyzer — Phase 1 → Phase 3 (Hugging Face IA)
-# Version: v3.4.2
-#
-# Status:
-# - Phase 1: Stable (ironclad)
-# - Phase 2: Deterministic Notion matching
-# - Phase 3: IA (last resort, gated, auditável)
-#
-# Notes:
-# - Nenhuma decisão automática
-# - Notion é a base canônica
-# - IA apenas compara identidade × candidatos
+# TS4 Mod Priority Auto Update App
+# Version: v3.4.3
+# Patch: PASSO 1 – Fingerprint da Database do Notion
 # ============================================================
 
 import streamlit as st
 import requests
-import re
+import hashlib
 import json
-from urllib.parse import urlparse
-from bs4 import BeautifulSoup
-from notion_client import Client
-from datetime import datetime
+import os
 
-# =========================
-# SESSION STATE
-# =========================
+# ========================
+# CONFIGURAÇÃO
+# ========================
 
-if "analysis_result" not in st.session_state:
-    st.session_state.analysis_result = None
+APP_VERSION = "v3.4.3"
 
-if "ai_logs" not in st.session_state:
-    st.session_state.ai_logs = []
+NOTION_API_URL = "https://api.notion.com/v1"
+NOTION_VERSION = "2022-06-28"
 
-# =========================
-# CONFIG
-# =========================
+NOTION_TOKEN = st.secrets.get("NOTION_TOKEN")
+NOTION_DATABASE_ID = st.secrets.get("NOTION_DATABASE_ID")
+
+HEADERS = {
+    "Authorization": f"Bearer {NOTION_TOKEN}",
+    "Notion-Version": NOTION_VERSION,
+    "Content-Type": "application/json",
+}
+
+# ========================
+# UTILIDADES
+# ========================
+
+def sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+# ========================
+# PASSO 1 – FINGERPRINT
+# ========================
+
+def compute_notion_fingerprint() -> str:
+    """
+    Gera um fingerprint determinístico da database do Notion
+    baseado EXCLUSIVAMENTE nos IDs das páginas.
+    """
+    page_ids = []
+    has_more = True
+    start_cursor = None
+
+    while has_more:
+        payload = {}
+        if start_cursor:
+            payload["start_cursor"] = start_cursor
+
+        r = requests.post(
+            f"{NOTION_API_URL}/databases/{NOTION_DATABASE_ID}/query",
+            headers=HEADERS,
+            json=payload,
+            timeout=30,
+        )
+
+        if r.status_code != 200:
+            # Falha aqui NÃO quebra o app
+            st.warning("⚠️ Não foi possível calcular fingerprint do Notion.")
+            return "fingerprint_error"
+
+        data = r.json()
+        results = data.get("results", [])
+
+        for page in results:
+            page_id = page.get("id")
+            if page_id:
+                page_ids.append(page_id)
+
+        has_more = data.get("has_more", False)
+        start_cursor = data.get("next_cursor")
+
+    page_ids.sort()
+    joined_ids = ",".join(page_ids)
+
+    return sha256(joined_ids)
+
+# ========================
+# INIT SESSION STATE
+# ========================
+
+if "notion_fingerprint" not in st.session_state:
+    st.session_state.notion_fingerprint = None
+
+# ========================
+# APP INIT
+# ========================
 
 st.set_page_config(
-    page_title="TS4 Mod Analyzer — Phase 2 · v3.4.2",
-    layout="centered"
+    page_title="TS4 Mod Priority Auto Update App",
+    layout="wide",
 )
 
-REQUEST_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    )
-}
+st.title("TS4 Mod Priority Auto Update App")
+st.caption(f"Versão {APP_VERSION}")
 
-# =========================
-# NOTION CLIENT
-# =========================
+# ========================
+# FINGERPRINT CHECK
+# ========================
 
-NOTION_TOKEN = st.secrets["notion"]["token"]
-NOTION_DATABASE_ID = st.secrets["notion"]["database_id"]
-notion = Client(auth=NOTION_TOKEN)
+current_fingerprint = compute_notion_fingerprint()
 
-# =========================
-# HUGGING FACE (IA)
-# =========================
-
-HF_TOKEN = st.secrets["huggingface"]["token"]
-HF_HEADERS = {
-    "Authorization": f"Bearer {HF_TOKEN}",
-    "Content-Type": "application/json"
-}
-
-HF_PRIMARY_MODEL = "https://api-inference.huggingface.co/models/google/flan-t5-base"
-HF_FALLBACK_MODEL = "https://api-inference.huggingface.co/models/facebook/bart-large-mnli"
-
-# =========================
-# FETCH
-# =========================
-
-def fetch_page(url: str) -> str:
-    try:
-        r = requests.get(url, headers=REQUEST_HEADERS, timeout=25)
-        return r.text or ""
-    except Exception:
-        return ""
-
-# =========================
-# IDENTIDADE (Phase 1)
-# =========================
-
-def extract_identity(html: str, url: str) -> dict:
-    soup = BeautifulSoup(html, "html.parser")
-
-    page_title = soup.title.get_text(strip=True) if soup.title else None
-    og_title, og_site = None, None
-
-    for meta in soup.find_all("meta"):
-        if meta.get("property") == "og:title":
-            og_title = meta.get("content", "").strip()
-        if meta.get("property") == "og:site_name":
-            og_site = meta.get("content", "").strip()
-
-    parsed = urlparse(url)
-    slug = parsed.path.strip("/").replace("-", " ").replace("/", " ").strip()
-
-    blocked_patterns = r"(just a moment|cloudflare|access denied|checking your browser|patreon)"
-    is_blocked = bool(
-        re.search(blocked_patterns, html.lower())
-        or (page_title and re.search(blocked_patterns, page_title.lower()))
-    )
-
-    return {
-        "page_title": page_title,
-        "og_title": og_title,
-        "og_site": og_site,
-        "url_slug": slug,
-        "domain": parsed.netloc.replace("www.", ""),
-        "is_blocked": is_blocked
-    }
-
-def normalize_name(raw: str) -> str:
-    if not raw:
-        return "—"
-    cleaned = re.sub(r"\s+", " ", raw).strip()
-    cleaned = re.sub(r"(by\s+[\w\s]+)$", "", cleaned, flags=re.I).strip()
-    return cleaned.title() if cleaned.islower() else cleaned
-
-def analyze_url(url: str) -> dict:
-    html = fetch_page(url)
-    raw = extract_identity(html, url)
-
-    raw_name = raw["page_title"] or raw["og_title"] or raw["url_slug"]
-    mod_name = normalize_name(raw_name)
-
-    return {
-        "url": url,
-        "mod_name": mod_name,
-        "debug": raw
-    }
-
-# =========================
-# PHASE 2 — NOTION MATCH
-# =========================
-
-def search_notion_candidates(mod_name: str, url: str) -> list:
-    candidates = []
-
-    try:
-        r = notion.databases.query(
-            database_id=NOTION_DATABASE_ID,
-            filter={"property": "URL", "url": {"equals": url}}
-        )
-        candidates.extend(r["results"])
-    except Exception:
-        pass
-
-    try:
-        r = notion.databases.query(
-            database_id=NOTION_DATABASE_ID,
-            filter={
-                "property": "Filename",
-                "title": {"contains": mod_name}
-            }
-        )
-        candidates.extend(r["results"])
-    except Exception:
-        pass
-
-    return list({c["id"]: c for c in candidates}.values())
-
-# =========================
-# PHASE 3 — IA
-# =========================
-
-def slug_quality(slug: str) -> str:
-    if not slug or len(slug.split()) <= 2:
-        return "poor"
-    return "good"
-
-def build_ai_payload(identity, candidates):
-    return {
-        "identity": {
-            "title": identity["mod_name"],
-            "domain": identity["debug"]["domain"],
-            "slug": identity["debug"]["url_slug"],
-            "page_blocked": identity["debug"]["is_blocked"]
-        },
-        "candidates": [
-            {
-                "notion_id": c["id"],
-                "title": c["properties"]["Filename"]["title"][0]["plain_text"]
-            }
-            for c in candidates
-            if c["properties"]["Filename"]["title"]
-        ]
-    }
-
-def safe_parse_hf_response(response):
-    try:
-        data = response.json()
-        if isinstance(data, list) and data:
-            text = data[0].get("generated_text")
-        elif isinstance(data, dict):
-            text = data.get("generated_text")
-        else:
-            return None
-
-        return json.loads(text) if text else None
-    except Exception:
-        return None
-
-def call_primary_model(payload):
-    prompt = f"""
-Compare the mod identity with the candidates.
-
-Rules:
-- Return JSON only
-- match=true only if EXACTLY ONE clear match exists
-- Do not guess
-
-Payload:
-{json.dumps(payload, ensure_ascii=False)}
-"""
-
-    r = requests.post(
-        HF_PRIMARY_MODEL,
-        headers=HF_HEADERS,
-        json={"inputs": prompt, "parameters": {"temperature": 0}}
-    )
-
-    return safe_parse_hf_response(r)
-
-def call_fallback_model(identity, candidates):
-    labels = [c["title"] for c in candidates]
-
-    r = requests.post(
-        HF_FALLBACK_MODEL,
-        headers=HF_HEADERS,
-        json={
-            "inputs": identity["mod_name"],
-            "parameters": {
-                "candidate_labels": labels,
-                "multi_label": True
-            }
-        }
-    )
-
-    try:
-        scores = r.json().get("scores", [])
-        strong = [
-            candidates[i]
-            for i, s in enumerate(scores)
-            if s >= 0.85
-        ]
-        return strong
-    except Exception:
-        return []
-
-def log_ai_event(stage, payload, result):
-    st.session_state.ai_logs.append({
-        "timestamp": datetime.utcnow().isoformat(),
-        "stage": stage,
-        "payload": payload,
-        "result": result
-    })
-
-# =========================
-# UI
-# =========================
-
-st.title("TS4 Mod Analyzer — Phase 2")
-
-url_input = st.text_input("URL do mod")
-
-if st.button("Analisar") and url_input.strip():
-    with st.spinner("Analisando..."):
-        st.session_state.analysis_result = analyze_url(url_input.strip())
-
-result = st.session_state.analysis_result
-
-if result:
-    st.subheader("📦 Mod")
-    st.write(result["mod_name"])
-
-    with st.expander("🔍 Debug técnico"):
-        st.json(result["debug"])
-
-    st.markdown("---")
-    st.subheader("Notion")
-
-    candidates = search_notion_candidates(result["mod_name"], result["url"])
-
-    if candidates:
-        st.success("Match encontrado no Notion.")
-        for c in candidates:
-            page_url = f"https://www.notion.so/{c['id'].replace('-', '')}"
-            title = c["properties"]["Filename"]["title"][0]["plain_text"]
-            st.markdown(f"- [{title}]({page_url})")
+if st.session_state.notion_fingerprint is None:
+    st.session_state.notion_fingerprint = current_fingerprint
+    st.info("📌 Fingerprint inicial da database do Notion calculado.")
+else:
+    if current_fingerprint != st.session_state.notion_fingerprint:
+        st.warning("🔄 A database do Notion foi alterada desde a última execução.")
+        st.session_state.notion_fingerprint = current_fingerprint
     else:
-        if (
-            result["debug"]["is_blocked"]
-            or slug_quality(result["debug"]["url_slug"]) == "poor"
-        ):
-            st.warning("Identidade fraca — acionando IA (Fase 3)")
+        st.success("✅ Database do Notion inalterada.")
 
-            payload = build_ai_payload(result, [])
-            primary = call_primary_model(payload)
+# ========================
+# PLACEHOLDER DO APP REAL
+# ========================
 
-            if primary and primary.get("match") is True:
-                st.success("IA identificou um match inequívoco.")
-            else:
-                log_ai_event("PRIMARY_NO_COLLAPSE", payload, primary)
-                st.info("IA não conseguiu colapsar o match.")
-
-        else:
-            st.info("Nenhuma duplicata encontrada.")
-
-# =========================
-# FOOTER
-# =========================
+st.divider()
 
 st.markdown(
     """
-    <div style="text-align:center;padding:1rem 0;font-size:0.85rem;color:#6b7280;">
-        <img src="https://64.media.tumblr.com/05d22b63711d2c391482d6faad367ccb/675ea15a79446393-0d/s2048x3072/cc918dd94012fe16170f2526549f3a0b19ecbcf9.png"
-             style="height:20px;vertical-align:middle;margin-right:6px;">
-        Criado por Akin (@UnpaidSimmer)
-        <div style="font-size:0.7rem;opacity:0.6;">v3.4.2 · Phase 3 (IA controlada)</div>
-    </div>
-    """,
-    unsafe_allow_html=True
+    ⚙️ **Status atual**
+    
+    - Phase 1: ativa  
+    - Phase 2: ativa  
+    - Phase 3 (IA): ativa  
+    - Cache de páginas: ❌ (próximo passo)  
+    - Cache de decisões: ❌ (passo seguinte)
+    """
 )
+
+# ========================
+# FOOTER
+# ========================
+
+st.divider()
+st.caption("TS4 Mod Priority Auto Update App · Controle determinístico · Zero achismo")
