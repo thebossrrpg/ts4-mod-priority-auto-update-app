@@ -7,8 +7,8 @@
 # - Phase 2 preserved (deterministic Notion match)
 # - Phase 3 preserved (IA last resort)
 # - ADDITIVE ONLY:
-#   • Deterministic cache
-#   • Canonical decision log
+#   • Deterministic cache (stores FINAL decision)
+#   • Canonical decision log (explains WHY)
 #
 # Rule: New version = SUM, never subtraction
 # ============================================================
@@ -24,11 +24,11 @@ from notion_client import Client
 from datetime import datetime
 
 # =========================
-# PAGE CONFIG (UI FIRST)
+# PAGE CONFIG
 # =========================
 
 st.set_page_config(
-    page_title="TS4 Mod Analyzer — Phase 2 · v3.5.0",
+    page_title="TS4 Mod Analyzer — Phase 3 · v3.5.0",
     layout="centered"
 )
 
@@ -47,9 +47,6 @@ if "decision_log" not in st.session_state:
 
 if "cache" not in st.session_state:
     st.session_state.cache = {}
-
-if "notion_fingerprint" not in st.session_state:
-    st.session_state.notion_fingerprint = None
 
 # =========================
 # CONFIG
@@ -82,49 +79,16 @@ HF_HEADERS = {
 }
 
 HF_PRIMARY_MODEL = "https://api-inference.huggingface.co/models/google/flan-t5-base"
-HF_FALLBACK_MODEL = "https://api-inference.huggingface.co/models/facebook/bart-large-mnli"
 
 # =========================
-# PASSO 1 — NOTION FINGERPRINT
+# UTILS
 # =========================
 
 def sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
-def compute_notion_fingerprint() -> str:
-    page_ids = []
-    has_more = True
-    cursor = None
-
-    while has_more:
-        payload = {}
-        if cursor:
-            payload["start_cursor"] = cursor
-
-        r = requests.post(
-            f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query",
-            headers={
-                "Authorization": f"Bearer {NOTION_TOKEN}",
-                "Notion-Version": "2022-06-28",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=30,
-        )
-
-        if r.status_code != 200:
-            return "fingerprint_error"
-
-        data = r.json()
-        for page in data.get("results", []):
-            if page.get("id"):
-                page_ids.append(page["id"])
-
-        has_more = data.get("has_more", False)
-        cursor = data.get("next_cursor")
-
-    page_ids.sort()
-    return sha256(",".join(page_ids))
+def now():
+    return datetime.utcnow().isoformat()
 
 # =========================
 # FETCH
@@ -242,18 +206,6 @@ def build_ai_payload(identity, candidates):
         ],
     }
 
-def safe_parse_hf_response(response):
-    try:
-        data = response.json()
-        text = None
-        if isinstance(data, list) and data:
-            text = data[0].get("generated_text")
-        elif isinstance(data, dict):
-            text = data.get("generated_text")
-        return json.loads(text) if text else None
-    except Exception:
-        return None
-
 def call_primary_model(payload):
     prompt = f"""
 Compare the mod identity with the candidates.
@@ -271,40 +223,28 @@ Payload:
         headers=HF_HEADERS,
         json={"inputs": prompt, "parameters": {"temperature": 0}},
     )
-    return safe_parse_hf_response(r)
+
+    try:
+        data = r.json()
+        text = data[0].get("generated_text") if isinstance(data, list) else data.get("generated_text")
+        return json.loads(text) if text else None
+    except Exception:
+        return None
 
 def log_ai_event(stage, payload, result):
-    st.session_state.ai_logs.append(
-        {
-            "timestamp": datetime.utcnow().isoformat(),
-            "stage": stage,
-            "payload": payload,
-            "result": result,
-        }
-    )
+    st.session_state.ai_logs.append({
+        "timestamp": now(),
+        "stage": stage,
+        "payload": payload,
+        "result": result,
+    })
 
 # =========================
 # UI — HEADER
 # =========================
 
-st.title("TS4 Mod Analyzer — Phase 2")
+st.title("TS4 Mod Analyzer — Phase 3")
 st.caption("Determinístico · Auditável · Zero achismo")
-
-# =========================
-# FINGERPRINT UI
-# =========================
-
-current_fp = compute_notion_fingerprint()
-if st.session_state.notion_fingerprint is None:
-    st.session_state.notion_fingerprint = current_fp
-    st.info("📌 Fingerprint inicial da database do Notion calculado.")
-elif current_fp != st.session_state.notion_fingerprint:
-    st.warning("🔄 A database do Notion foi alterada desde a última execução.")
-    st.session_state.notion_fingerprint = current_fp
-else:
-    st.success("✅ Database do Notion inalterada.")
-
-st.divider()
 
 # =========================
 # UI — ANALYSIS
@@ -313,81 +253,76 @@ st.divider()
 url_input = st.text_input("URL do mod")
 
 if st.button("Analisar") and url_input.strip():
-    with st.spinner("Analisando..."):
-        identity = analyze_url(url_input.strip())
-        identity_hash = sha256(json.dumps(identity, sort_keys=True))
+    identity = analyze_url(url_input.strip())
+    identity_hash = sha256(json.dumps(identity, sort_keys=True))
 
-        if identity_hash in st.session_state.cache:
-            st.session_state.analysis_result = st.session_state.cache[identity_hash]
-            st.info("⚡ Resultado recuperado do cache")
+    # CACHE HIT
+    if identity_hash in st.session_state.cache:
+        st.session_state.analysis_result = st.session_state.cache[identity_hash]
+        st.info("⚡ Resultado recuperado do cache")
+    else:
+        candidates = search_notion_candidates(identity["mod_name"], identity["url"])
+
+        decision = {
+            "timestamp": now(),
+            "identity": identity,
+            "phase_2_candidates": len(candidates),
+            "decision": None,
+            "reason": None,
+        }
+
+        if candidates:
+            decision["decision"] = "FOUND"
+            decision["reason"] = "Deterministic match in Phase 2 (Notion)"
         else:
-            st.session_state.analysis_result = identity
-            st.session_state.cache[identity_hash] = identity
+            payload = build_ai_payload(identity, [])
+            ai_result = None
+
+            if identity["debug"]["is_blocked"] or slug_quality(identity["debug"]["url_slug"]) == "poor":
+                ai_result = call_primary_model(payload)
+                log_ai_event("PHASE_3_CALLED", payload, ai_result)
+                decision["reason"] = "Phase 3 triggered due to weak identity"
+            else:
+                log_ai_event("PHASE_3_SKIPPED", payload, {"reason": "Strong identity, no candidates"})
+                decision["reason"] = "Strong identity but no Notion candidates"
+
+            decision["decision"] = "NOT_FOUND"
+
+        # STORE
+        st.session_state.decision_log.append(decision)
+        st.session_state.cache[identity_hash] = decision
+        st.session_state.analysis_result = decision
 
 result = st.session_state.analysis_result
 
 if result:
     st.subheader("📦 Mod")
-    st.write(result["mod_name"])
+    st.write(result["identity"]["mod_name"])
+    st.success(result["decision"])
 
     with st.expander("🔍 Debug técnico"):
-        st.json(result["debug"])
-
-    st.markdown("---")
-    st.subheader("Notion")
-
-    candidates = search_notion_candidates(result["mod_name"], result["url"])
-
-    decision_record = {
-        "timestamp": datetime.utcnow().isoformat(),
-        "identity": result,
-        "phase_2_candidates": len(candidates),
-        "decision": None,
-    }
-
-    if candidates:
-        decision_record["decision"] = "FOUND"
-        st.success("Match encontrado no Notion.")
-        for c in candidates:
-            page_url = f"https://www.notion.so/{c['id'].replace('-', '')}"
-            title = c["properties"]["Filename"]["title"][0]["plain_text"]
-            st.markdown(f"- [{title}]({page_url})")
-    else:
-        if result["debug"]["is_blocked"] or slug_quality(result["debug"]["url_slug"]) == "poor":
-            st.warning("Identidade fraca — acionando IA (Fase 3)")
-            payload = build_ai_payload(result, [])
-            primary = call_primary_model(payload)
-
-            if primary and primary.get("match") is True:
-                decision_record["decision"] = "FOUND"
-                st.success("IA identificou um match inequívoco.")
-            else:
-                decision_record["decision"] = "NOT_FOUND"
-                log_ai_event("PRIMARY_NO_COLLAPSE", payload, primary)
-                st.info("IA não conseguiu colapsar o match.")
-        else:
-            decision_record["decision"] = "NOT_FOUND"
-            st.info("Nenhuma duplicata encontrada.")
-
-    st.session_state.decision_log.append(decision_record)
+        st.json(result)
 
 # =========================
-# CACHE (UX CONTROLADA)
+# DOWNLOADS — CACHE / LOG
 # =========================
 
-with st.expander("🗃️ Cache em memória"):
-    st.write(f"Itens em cache: {len(st.session_state.cache)}")
-    st.json(list(st.session_state.cache.keys()))
+st.divider()
+st.subheader("📁 Dados persistentes")
 
-# =========================
-# LOG (UX CONTROLADA)
-# =========================
+st.download_button(
+    "🗃️ Baixar cache de decisões (JSON)",
+    data=json.dumps(st.session_state.cache, indent=2, ensure_ascii=False),
+    file_name="ts4_mod_cache.json",
+    mime="application/json",
+)
 
-with st.expander("📊 Log canônico de decisões"):
-    st.write(f"Entradas registradas: {len(st.session_state.decision_log)}")
-    for i, entry in enumerate(st.session_state.decision_log, 1):
-        with st.expander(f"Decisão #{i} — {entry['decision']}"):
-            st.json(entry)
+st.download_button(
+    "📊 Baixar log canônico de decisões (JSON)",
+    data=json.dumps(st.session_state.decision_log, indent=2, ensure_ascii=False),
+    file_name="ts4_mod_decision_log.json",
+    mime="application/json",
+)
 
 # =========================
 # FOOTER (CANÔNICO — PRESERVADO)
