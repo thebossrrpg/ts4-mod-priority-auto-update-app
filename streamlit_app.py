@@ -1,6 +1,6 @@
 # ============================================================
 # TS4 Mod Analyzer — Phase 1 → Phase 3 (Hugging Face IA)
-# Version: v3.4.9
+# Version: v3.5.0
 #
 # Status:
 # - Phase 1: Stable (ironclad)
@@ -11,27 +11,17 @@
 # - Nenhuma decisão automática
 # - Notion é a base canônica
 # - IA apenas compara identidade × candidatos
-# - PASSO 1: Fingerprint determinístico da database
+# - Logs canônicos e imutáveis
 # ============================================================
 
 import streamlit as st
 import requests
 import re
 import json
-import hashlib
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from notion_client import Client
 from datetime import datetime
-
-# =========================
-# PAGE CONFIG (UI FIRST)
-# =========================
-
-st.set_page_config(
-    page_title="TS4 Mod Analyzer — Phase 2 · v3.4.9",
-    layout="centered"
-)
 
 # =========================
 # SESSION STATE
@@ -43,12 +33,14 @@ if "analysis_result" not in st.session_state:
 if "ai_logs" not in st.session_state:
     st.session_state.ai_logs = []
 
-if "notion_fingerprint" not in st.session_state:
-    st.session_state.notion_fingerprint = None
-
 # =========================
 # CONFIG
 # =========================
+
+st.set_page_config(
+    page_title="TS4 Mod Analyzer — Phase 3 · v3.5.0",
+    layout="centered"
+)
 
 REQUEST_HEADERS = {
     "User-Agent": (
@@ -67,7 +59,7 @@ NOTION_DATABASE_ID = st.secrets["notion"]["database_id"]
 notion = Client(auth=NOTION_TOKEN)
 
 # =========================
-# HUGGING FACE (IA)
+# HUGGING FACE
 # =========================
 
 HF_TOKEN = st.secrets["huggingface"]["token"]
@@ -78,48 +70,6 @@ HF_HEADERS = {
 
 HF_PRIMARY_MODEL = "https://api-inference.huggingface.co/models/google/flan-t5-base"
 HF_FALLBACK_MODEL = "https://api-inference.huggingface.co/models/facebook/bart-large-mnli"
-
-# =========================
-# PASSO 1 — NOTION FINGERPRINT
-# =========================
-
-def sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-def compute_notion_fingerprint() -> str:
-    page_ids = []
-    has_more = True
-    cursor = None
-
-    while has_more:
-        payload = {}
-        if cursor:
-            payload["start_cursor"] = cursor
-
-        r = requests.post(
-            f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query",
-            headers={
-                "Authorization": f"Bearer {NOTION_TOKEN}",
-                "Notion-Version": "2022-06-28",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=30,
-        )
-
-        if r.status_code != 200:
-            return "fingerprint_error"
-
-        data = r.json()
-        for page in data.get("results", []):
-            if page.get("id"):
-                page_ids.append(page["id"])
-
-        has_more = data.get("has_more", False)
-        cursor = data.get("next_cursor")
-
-    page_ids.sort()
-    return sha256(",".join(page_ids))
 
 # =========================
 # FETCH
@@ -140,8 +90,7 @@ def extract_identity(html: str, url: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
 
     page_title = soup.title.get_text(strip=True) if soup.title else None
-    og_title = None
-    og_site = None
+    og_title, og_site = None, None
 
     for meta in soup.find_all("meta"):
         if meta.get("property") == "og:title":
@@ -164,7 +113,7 @@ def extract_identity(html: str, url: str) -> dict:
         "og_site": og_site,
         "url_slug": slug,
         "domain": parsed.netloc.replace("www.", ""),
-        "is_blocked": is_blocked,
+        "is_blocked": is_blocked
     }
 
 def normalize_name(raw: str) -> str:
@@ -177,15 +126,18 @@ def normalize_name(raw: str) -> str:
 def analyze_url(url: str) -> dict:
     html = fetch_page(url)
     raw = extract_identity(html, url)
+
     raw_name = raw["page_title"] or raw["og_title"] or raw["url_slug"]
+    mod_name = normalize_name(raw_name)
+
     return {
         "url": url,
-        "mod_name": normalize_name(raw_name),
-        "debug": raw,
+        "mod_name": mod_name,
+        "identity": raw
     }
 
 # =========================
-# PHASE 2 — NOTION MATCH
+# PHASE 2 — NOTION
 # =========================
 
 def search_notion_candidates(mod_name: str, url: str) -> list:
@@ -194,7 +146,7 @@ def search_notion_candidates(mod_name: str, url: str) -> list:
     try:
         r = notion.databases.query(
             database_id=NOTION_DATABASE_ID,
-            filter={"property": "URL", "url": {"equals": url}},
+            filter={"property": "URL", "url": {"equals": url}}
         )
         candidates.extend(r["results"])
     except Exception:
@@ -203,7 +155,10 @@ def search_notion_candidates(mod_name: str, url: str) -> list:
     try:
         r = notion.databases.query(
             database_id=NOTION_DATABASE_ID,
-            filter={"property": "Filename", "title": {"contains": mod_name}},
+            filter={
+                "property": "Filename",
+                "title": {"contains": mod_name}
+            }
         )
         candidates.extend(r["results"])
     except Exception:
@@ -216,34 +171,37 @@ def search_notion_candidates(mod_name: str, url: str) -> list:
 # =========================
 
 def slug_quality(slug: str) -> str:
-    return "poor" if not slug or len(slug.split()) <= 2 else "good"
+    if not slug or len(slug.split()) <= 2:
+        return "poor"
+    return "good"
 
 def build_ai_payload(identity, candidates):
     return {
         "identity": {
             "title": identity["mod_name"],
-            "domain": identity["debug"]["domain"],
-            "slug": identity["debug"]["url_slug"],
-            "page_blocked": identity["debug"]["is_blocked"],
+            "domain": identity["identity"]["domain"],
+            "slug": identity["identity"]["url_slug"],
+            "page_blocked": identity["identity"]["is_blocked"]
         },
         "candidates": [
             {
                 "notion_id": c["id"],
-                "title": c["properties"]["Filename"]["title"][0]["plain_text"],
+                "title": c["properties"]["Filename"]["title"][0]["plain_text"]
             }
             for c in candidates
             if c["properties"]["Filename"]["title"]
-        ],
+        ]
     }
 
 def safe_parse_hf_response(response):
     try:
         data = response.json()
-        text = None
         if isinstance(data, list) and data:
             text = data[0].get("generated_text")
         elif isinstance(data, dict):
             text = data.get("generated_text")
+        else:
+            return None
         return json.loads(text) if text else None
     except Exception:
         return None
@@ -263,62 +221,48 @@ Payload:
     r = requests.post(
         HF_PRIMARY_MODEL,
         headers=HF_HEADERS,
-        json={"inputs": prompt, "parameters": {"temperature": 0}},
+        json={"inputs": prompt, "parameters": {"temperature": 0}}
     )
     return safe_parse_hf_response(r)
 
 def call_fallback_model(identity, candidates):
     labels = [c["title"] for c in candidates]
+
     r = requests.post(
         HF_FALLBACK_MODEL,
         headers=HF_HEADERS,
         json={
             "inputs": identity["mod_name"],
-            "parameters": {"candidate_labels": labels, "multi_label": True},
-        },
+            "parameters": {
+                "candidate_labels": labels,
+                "multi_label": True
+            }
+        }
     )
+
     try:
         scores = r.json().get("scores", [])
-        return [candidates[i] for i, s in enumerate(scores) if s >= 0.85]
+        return [
+            candidates[i]
+            for i, s in enumerate(scores)
+            if s >= 0.85
+        ]
     except Exception:
         return []
 
 def log_ai_event(stage, payload, result):
-    st.session_state.ai_logs.append(
-        {
-            "timestamp": datetime.utcnow().isoformat(),
-            "stage": stage,
-            "payload": payload,
-            "result": result,
-        }
-    )
+    st.session_state.ai_logs.append({
+        "timestamp": datetime.utcnow().isoformat(),
+        "stage": stage,
+        "payload": payload,
+        "result": result
+    })
 
 # =========================
-# UI — HEADER
+# UI
 # =========================
 
-st.title("TS4 Mod Analyzer — Phase 2")
-st.caption("Determinístico · Auditável · Zero achismo")
-
-# =========================
-# PASSO 1 — UI FEEDBACK
-# =========================
-
-current_fp = compute_notion_fingerprint()
-if st.session_state.notion_fingerprint is None:
-    st.session_state.notion_fingerprint = current_fp
-    st.info("📌 Fingerprint inicial da database do Notion calculado.")
-elif current_fp != st.session_state.notion_fingerprint:
-    st.warning("🔄 A database do Notion foi alterada desde a última execução.")
-    st.session_state.notion_fingerprint = current_fp
-else:
-    st.success("✅ Database do Notion inalterada.")
-
-st.divider()
-
-# =========================
-# UI — ANALYSIS
-# =========================
+st.title("TS4 Mod Analyzer — Phase 3")
 
 url_input = st.text_input("URL do mod")
 
@@ -333,7 +277,7 @@ if result:
     st.write(result["mod_name"])
 
     with st.expander("🔍 Debug técnico"):
-        st.json(result["debug"])
+        st.json(result["identity"])
 
     st.markdown("---")
     st.subheader("Notion")
@@ -347,7 +291,10 @@ if result:
             title = c["properties"]["Filename"]["title"][0]["plain_text"]
             st.markdown(f"- [{title}]({page_url})")
     else:
-        if result["debug"]["is_blocked"] or slug_quality(result["debug"]["url_slug"]) == "poor":
+        if (
+            result["identity"]["is_blocked"]
+            or slug_quality(result["identity"]["url_slug"]) == "poor"
+        ):
             st.warning("Identidade fraca — acionando IA (Fase 3)")
 
             payload = build_ai_payload(result, [])
@@ -362,7 +309,7 @@ if result:
             st.info("Nenhuma duplicata encontrada.")
 
 # =========================
-# FOOTER (CANÔNICO)
+# FOOTER
 # =========================
 
 st.markdown(
@@ -371,8 +318,8 @@ st.markdown(
         <img src="https://64.media.tumblr.com/05d22b63711d2c391482d6faad367ccb/675ea15a79446393-0d/s2048x3072/cc918dd94012fe16170f2526549f3a0b19ecbcf9.png"
              style="height:20px;vertical-align:middle;margin-right:6px;">
         Criado por Akin (@UnpaidSimmer)
-        <div style="font-size:0.7rem;opacity:0.6;">v3.4.9 · Phase 3 (IA controlada)</div>
+        <div style="font-size:0.7rem;opacity:0.6;">v3.5.0 · Phase 3 (IA controlada)</div>
     </div>
     """,
-    unsafe_allow_html=True,
+    unsafe_allow_html=True
 )
