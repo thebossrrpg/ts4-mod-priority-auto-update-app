@@ -7,9 +7,8 @@
 # - Phase 2 preserved (deterministic Notion match)
 # - Phase 3 preserved (IA last resort)
 # - ADDITIVE ONLY:
-#   • Phase 2 cache (Notion pages = source of truth)
-#   • Phase 3 cache (FOUND only)
-#   • Canonical decision log (NOT_FOUND)
+#   • Deterministic cache
+#   • Canonical decision log
 #
 # Rule: New version = SUM, never subtraction
 # ============================================================
@@ -40,17 +39,21 @@ st.set_page_config(
 if "analysis_result" not in st.session_state:
     st.session_state.analysis_result = None
 
-if "notion_cache" not in st.session_state:
-    st.session_state.notion_cache = {}
-
-if "phase3_cache" not in st.session_state:
-    st.session_state.phase3_cache = {}
+if "ai_logs" not in st.session_state:
+    st.session_state.ai_logs = []
 
 if "decision_log" not in st.session_state:
     st.session_state.decision_log = []
 
-if "ai_logs" not in st.session_state:
-    st.session_state.ai_logs = []
+if "cache" not in st.session_state:
+    st.session_state.cache = {}
+
+# Phase 2 lazy cache (Notion pages)
+if "phase2_cache_loaded" not in st.session_state:
+    st.session_state.phase2_cache_loaded = False
+
+if "phase2_pages" not in st.session_state:
+    st.session_state.phase2_pages = []
 
 # =========================
 # CONFIG
@@ -94,11 +97,8 @@ def sha256(text: str) -> str:
 def now():
     return datetime.utcnow().isoformat()
 
-def fingerprint(obj) -> str:
-    return sha256(json.dumps(obj, sort_keys=True, ensure_ascii=False))
-
 # =========================
-# PHASE 1 — IDENTIDADE
+# FETCH
 # =========================
 
 def fetch_page(url: str) -> str:
@@ -107,6 +107,10 @@ def fetch_page(url: str) -> str:
         return r.text or ""
     except Exception:
         return ""
+
+# =========================
+# PHASE 1 — IDENTIDADE
+# =========================
 
 def extract_identity(html: str, url: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
@@ -124,230 +128,224 @@ def extract_identity(html: str, url: str) -> dict:
     parsed = urlparse(url)
     slug = parsed.path.strip("/").replace("-", " ").replace("/", " ").strip()
 
-    blocked_patterns = r"(just a moment|cloudflare|access denied|checking your browser)"
+    blocked_patterns = r"(just a moment|cloudflare|access denied|checking your browser|patreon)"
     is_blocked = bool(
         re.search(blocked_patterns, html.lower())
         or (page_title and re.search(blocked_patterns, page_title.lower()))
     )
 
     return {
-        "url": url,
         "page_title": page_title,
         "og_title": og_title,
         "og_site": og_site,
-        "slug": slug,
+        "url_slug": slug,
         "domain": parsed.netloc.replace("www.", ""),
         "is_blocked": is_blocked,
-        "extracted_at": now()
     }
 
-def presentation_name(identity, notion_page=None) -> str:
-    if notion_page:
-        title = notion_page["properties"]["Filename"]["title"]
-        if title:
-            return title[0]["plain_text"]
+def normalize_name(raw: str) -> str:
+    if not raw:
+        return "—"
+    cleaned = re.sub(r"\s+", " ", raw).strip()
+    cleaned = re.sub(r"(by\s+[\w\s]+)$", "", cleaned, flags=re.I).strip()
+    return cleaned.title() if cleaned.islower() else cleaned
 
-    return (
-        identity["og_title"]
-        or identity["page_title"]
-        or identity["slug"]
-        or "—"
-    )
+def analyze_url(url: str) -> dict:
+    html = fetch_page(url)
+    raw = extract_identity(html, url)
+    raw_name = raw["page_title"] or raw["og_title"] or raw["url_slug"]
+
+    return {
+        "url": url,
+        "mod_name": normalize_name(raw_name),
+        "debug": raw,
+    }
 
 # =========================
-# PHASE 2 — NOTION CACHE
+# PHASE 2 — LAZY CACHE LOAD
 # =========================
 
-def load_notion_cache():
-    pages = {}
-    has_more = True
+def ensure_phase2_cache_loaded():
+    """
+    Lazy-load full Notion database only when Phase 2 is needed.
+    Never runs at startup.
+    """
+    if st.session_state.phase2_cache_loaded:
+        return
+
+    pages = []
     cursor = None
 
-    while has_more:
-        payload = {}
-        if cursor:
-            payload["start_cursor"] = cursor
-
-        r = notion.databases.query(
+    while True:
+        response = notion.databases.query(
             database_id=NOTION_DATABASE_ID,
-            json=payload
+            start_cursor=cursor
         )
+        pages.extend(response["results"])
+        cursor = response.get("next_cursor")
+        if not cursor:
+            break
 
-        data = r["results"]
-        for page in data:
-            pages[page["id"]] = page
+    st.session_state.phase2_pages = pages
+    st.session_state.phase2_cache_loaded = True
 
-        has_more = r.get("has_more", False)
-        cursor = r.get("next_cursor")
+def search_notion_candidates(mod_name: str, url: str) -> list:
+    ensure_phase2_cache_loaded()
 
-    return pages
+    candidates = []
 
-if not st.session_state.notion_cache:
-    st.session_state.notion_cache = load_notion_cache()
-
-# =========================
-# PHASE 2 — MATCH
-# =========================
-
-def search_notion(identity):
-    matches = []
-
-    for page in st.session_state.notion_cache.values():
-        props = page["properties"]
-
-        url_prop = props.get("URL", {}).get("url")
+    for page in st.session_state.phase2_pages:
+        props = page.get("properties", {})
         title_prop = props.get("Filename", {}).get("title", [])
+        url_prop = props.get("URL", {}).get("url")
 
-        if url_prop and url_prop == identity["url"]:
-            matches.append(page)
-            continue
+        title_text = title_prop[0]["plain_text"] if title_prop else ""
 
-        if title_prop:
-            name = title_prop[0]["plain_text"].lower()
-            if identity["slug"].lower() in name:
-                matches.append(page)
+        if url_prop and url_prop == url:
+            candidates.append(page)
+        elif mod_name and mod_name.lower() in title_text.lower():
+            candidates.append(page)
 
-    return matches
+    return candidates
 
 # =========================
 # PHASE 3 — IA
 # =========================
 
+def slug_quality(slug: str) -> str:
+    return "poor" if not slug or len(slug.split()) <= 2 else "good"
+
 def build_ai_payload(identity, candidates):
     return {
-        "identity": identity,
+        "identity": {
+            "title": identity["mod_name"],
+            "domain": identity["debug"]["domain"],
+            "slug": identity["debug"]["url_slug"],
+            "page_blocked": identity["debug"]["is_blocked"],
+        },
         "candidates": [
             {
-                "id": c["id"],
-                "title": c["properties"]["Filename"]["title"][0]["plain_text"]
+                "notion_id": c["id"],
+                "title": c["properties"]["Filename"]["title"][0]["plain_text"],
             }
             for c in candidates
             if c["properties"]["Filename"]["title"]
-        ]
+        ],
     }
 
 def call_primary_model(payload):
-    prompt = (
-        "Compare the identity with the candidates.\n"
-        "Return JSON only.\n"
-        "match=true only if exactly ONE clear match exists.\n\n"
-        f"{json.dumps(payload, ensure_ascii=False)}"
-    )
+    prompt = f"""
+Compare the mod identity with the candidates.
 
+Rules:
+- Return JSON only
+- match=true only if EXACTLY ONE clear match exists
+- Do not guess
+
+Payload:
+{json.dumps(payload, ensure_ascii=False)}
+"""
     r = requests.post(
         HF_PRIMARY_MODEL,
         headers=HF_HEADERS,
-        json={"inputs": prompt, "parameters": {"temperature": 0}}
+        json={"inputs": prompt, "parameters": {"temperature": 0}},
     )
 
     try:
         data = r.json()
-        text = data[0].get("generated_text")
-        return json.loads(text)
+        text = data[0].get("generated_text") if isinstance(data, list) else data.get("generated_text")
+        return json.loads(text) if text else None
     except Exception:
         return None
 
+def log_ai_event(stage, payload, result):
+    st.session_state.ai_logs.append({
+        "timestamp": now(),
+        "stage": stage,
+        "payload": payload,
+        "result": result,
+    })
+
 # =========================
-# UI
+# UI — HEADER
 # =========================
 
 st.title("TS4 Mod Analyzer — Phase 3")
 st.caption("Determinístico · Auditável · Zero achismo")
 
+# =========================
+# UI — ANALYSIS
+# =========================
+
 url_input = st.text_input("URL do mod")
 
 if st.button("Analisar") and url_input.strip():
-    html = fetch_page(url_input.strip())
-    identity = extract_identity(html, url_input.strip())
-    identity_fp = fingerprint(identity)
+    identity = analyze_url(url_input.strip())
+    identity_hash = sha256(json.dumps(identity, sort_keys=True))
 
-    # Phase 3 cache hit
-    if identity_fp in st.session_state.phase3_cache:
-        st.session_state.analysis_result = st.session_state.phase3_cache[identity_fp]
-        st.info("⚡ Resultado recuperado do cache (Phase 3)")
+    if identity_hash in st.session_state.cache:
+        st.session_state.analysis_result = st.session_state.cache[identity_hash]
+        st.info("⚡ Resultado recuperado do cache")
     else:
-        candidates = search_notion(identity)
-
-        if len(candidates) == 1:
-            page = candidates[0]
-            record = {
-                "decision": "FOUND",
-                "identity": identity,
-                "notion_page": page,
-                "notion_fp": fingerprint(page),
-                "resolved_at": now()
-            }
-            st.session_state.phase3_cache[identity_fp] = record
-            st.session_state.analysis_result = record
-
-        else:
-            payload = build_ai_payload(identity, candidates)
-            ai_result = call_primary_model(payload)
-
-            st.session_state.ai_logs.append({
-                "timestamp": now(),
-                "payload": payload,
-                "result": ai_result
-            })
-
-            st.session_state.decision_log.append({
-                "timestamp": now(),
-                "identity": identity,
-                "candidates": [
-                    c["properties"]["Filename"]["title"][0]["plain_text"]
-                    for c in candidates
-                    if c["properties"]["Filename"]["title"]
-                ],
-                "reason": "Indeterminação na Phase 3",
-                "ai_result": ai_result
-            })
-
-            st.session_state.analysis_result = {
-                "decision": "NOT_FOUND",
-                "identity": identity
-            }
-
-# =========================
-# UI — RESULT
-# =========================
+        st.session_state.analysis_result = identity
+        st.session_state.cache[identity_hash] = identity
 
 result = st.session_state.analysis_result
 
 if result:
-    name = presentation_name(
-        result["identity"],
-        result.get("notion_page")
-    )
-
     st.subheader("📦 Mod")
-    st.write(name)
+    st.write(result["mod_name"])
 
-    if result.get("notion_page"):
-        page_id = result["notion_page"]["id"].replace("-", "")
-        st.markdown(f"[Abrir no Notion](https://www.notion.so/{page_id})")
+    with st.expander("🔍 Debug técnico"):
+        st.json(result["debug"])
+
+    candidates = search_notion_candidates(result["mod_name"], result["url"])
+
+    decision_record = {
+        "timestamp": now(),
+        "identity": result,
+        "phase_2_candidates": len(candidates),
+        "decision": None,
+    }
+
+    if candidates:
+        decision_record["decision"] = "FOUND"
+        st.success("Match encontrado no Notion.")
+    else:
+        payload = build_ai_payload(result, [])
+        ai_result = None
+
+        if result["debug"]["is_blocked"] or slug_quality(result["debug"]["url_slug"]) == "poor":
+            ai_result = call_primary_model(payload)
+
+        log_ai_event("PHASE_3_EXECUTED", payload, ai_result)
+        decision_record["decision"] = "NOT_FOUND"
+        st.info("Nenhuma duplicata encontrada.")
+
+    st.session_state.decision_log.append(decision_record)
 
 # =========================
-# DOWNLOADS
+# DOWNLOADS — CACHE / LOG
 # =========================
 
 st.divider()
 
 st.download_button(
-    "🗃️ Baixar cache Phase 3 (FOUND)",
-    json.dumps(st.session_state.phase3_cache, indent=2, ensure_ascii=False),
-    "phase3_cache.json",
-    "application/json"
+    "🗃️ Baixar cache (JSON)",
+    data=json.dumps(st.session_state.cache, indent=2, ensure_ascii=False),
+    file_name="cache.json",
+    mime="application/json",
 )
 
 st.download_button(
-    "📊 Baixar log canônico (NOT_FOUND)",
-    json.dumps(st.session_state.decision_log, indent=2, ensure_ascii=False),
-    "decision_log.json",
-    "application/json"
+    "📊 Baixar log canônico (JSON)",
+    data=json.dumps(st.session_state.decision_log, indent=2, ensure_ascii=False),
+    file_name="decision_log.json",
+    mime="application/json",
 )
 
 # =========================
-# FOOTER (CANÔNICO)
+# FOOTER (CANÔNICO — PRESERVADO)
 # =========================
 
 st.markdown(
@@ -359,5 +357,5 @@ st.markdown(
         <div style="font-size:0.7rem;opacity:0.6;">v3.5.0 · Phase 3 (IA controlada)</div>
     </div>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
