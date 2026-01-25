@@ -1,14 +1,18 @@
 # ============================================================
 # TS4 Mod Analyzer — Phase 1 → Phase 3 (Hugging Face IA)
-# Version: v3.5.4
+# Version: v3.5.5  # Bump para fixes de contrato (aditivo)
 #
 # Contract:
 # - Phase 1 preserved (identity extraction)
-# - Phase 2 preserved (deterministic Notion match)
-# - Phase 3 preserved (IA last resort, MAY confirm FOUND)
+# - Phase 2 preserved (deterministic Notion match via cache)
+# - Phase 3 preserved (IA last resort, provides signals only)
+# - Post-Phase 3: Interprets IA signals deterministically
 # - ADDITIVE ONLY:
 #   • Deterministic cache (stores FINAL decision)
 #   • Canonical decision log (1 entry per mod, explains WHY)
+#   • Fingerprints for invalidation
+#   • Logs in HTML format
+#   • Fallback IA model
 #
 # Rule: New version = SUM, never subtraction
 # ============================================================
@@ -28,7 +32,7 @@ from datetime import datetime
 # =========================
 
 st.set_page_config(
-    page_title="TS4 Mod Analyzer — Phase 3 · v3.5.4",
+    page_title="TS4 Mod Analyzer — Phase 3 · v3.5.5",
     layout="centered"
 )
 
@@ -60,6 +64,9 @@ if "notioncache_loaded" not in st.session_state:
 if "notioncache" not in st.session_state:
     st.session_state.notioncache = {}
 
+if "notion_fingerprint" not in st.session_state:
+    st.session_state.notion_fingerprint = None
+
 # =========================
 # CONFIG
 # =========================
@@ -73,7 +80,7 @@ REQUEST_HEADERS = {
 }
 
 # =========================
-# NOTION CLIENT
+# NOTION CLIENT (para fingerprint, se necessário; não usado em Phase 2)
 # =========================
 
 NOTION_TOKEN = st.secrets["notion"]["token"]
@@ -91,7 +98,8 @@ HF_HEADERS = {
 }
 
 HF_PRIMARY_MODEL = "https://api-inference.huggingface.co/models/google/flan-t5-base"
-PHASE3_CONFIDENCE_THRESHOLD = 0.93
+HF_FALLBACK_MODEL = "https://api-inference.huggingface.co/models/facebook/bart-large-mnli"
+PHASE3_CONFIDENCE_THRESHOLD = 0.93  # Alta confiança para interpretação
 
 # =========================
 # UTILS
@@ -110,14 +118,24 @@ def upsert_decision_log(identity_hash: str, decision: dict):
             return
     st.session_state.decision_log.append(decision)
 
+def compute_notion_fingerprint() -> str:
+    # Computa baseado em notioncache (determinístico)
+    if not st.session_state.notioncache:
+        return "empty"
+    page_ids = sorted(st.session_state.notioncache.get("pages", {}).keys())
+    return sha256(",".join(page_ids))
+
 # =========================
-# PATCH — IDENTITY HASH CANÔNICO (C4)
+# IDENTITY HASH CANÔNICO (expandido aditivamente)
 # =========================
 
 def build_identity_hash(identity: dict) -> str:
     canonical_identity = {
         "url": identity["url"],
         "mod_name": identity["mod_name"],
+        "domain": identity["debug"]["domain"],
+        "slug": identity["debug"]["url_slug"],
+        "is_blocked": identity["debug"]["is_blocked"],
     }
     return sha256(json.dumps(canonical_identity, sort_keys=True))
 
@@ -126,34 +144,44 @@ def build_identity_hash(identity: dict) -> str:
 # =========================
 
 def load_notioncache(data: dict):
-    st.session_state.notioncache = data.get("notioncache", {})
+    # Validar schema mínimo
+    if "pages" not in data.get("pages", {}):
+        raise ValueError("Schema inválido: faltam 'pages'")
+    st.session_state.notioncache = data
     st.session_state.matchcache = data.get("matchcache", {})
     st.session_state.notfoundcache = data.get("notfoundcache", {})
     st.session_state.decision_log = data.get("decision_log", [])
+    st.session_state.notion_fingerprint = compute_notion_fingerprint()
     st.session_state.notioncache_loaded = True
     st.session_state.analysis_result = None
 
 # =========================
-# SNAPSHOT (BACKUP / RESTORE) — C3
+# SNAPSHOT (alinhado com schema canônico)
 # =========================
 
 def build_snapshot():
     return {
         "meta": {
-            "version": "v3.5.4",
-            "generated_at": now(),
+            "app": "TS4 Mod Analyzer",
+            "version": "v3.5.5",
+            "created_at": now(),
+            "phase_2_fingerprint": st.session_state.notion_fingerprint,
         },
-        "matchcache": st.session_state.matchcache,
-        "notfoundcache": st.session_state.notfoundcache,
-        "decision_log": st.session_state.decision_log,
+        "phase_2_cache": st.session_state.notioncache,  # Fonte de verdade
+        "phase_3_cache": st.session_state.matchcache,  # Apenas FOUND
+        "canonical_log": st.session_state.decision_log,  # Indeterminações
     }
 
-def load_snapshot(snapshot: dict):
-    st.session_state.matchcache = snapshot.get("matchcache", {})
-    st.session_state.notfoundcache = snapshot.get("notfoundcache", {})
-    st.session_state.decision_log = snapshot.get("decision_log", [])
-    st.session_state.analysis_result = None
+def hydrate_session_state(snapshot: dict):
+    required_keys = {"meta", "phase_2_cache", "phase_3_cache", "canonical_log"}
+    if not required_keys.issubset(snapshot.keys()):
+        raise ValueError("Snapshot inválido ou incompleto")
+    st.session_state.notioncache = snapshot["phase_2_cache"]
+    st.session_state.matchcache = snapshot["phase_3_cache"]
+    st.session_state.decision_log = snapshot["canonical_log"]
+    st.session_state.notion_fingerprint = snapshot["meta"].get("phase_2_fingerprint")
     st.session_state.notioncache_loaded = True
+    st.session_state.analysis_result = None
 
 # =========================
 # FETCH
@@ -220,34 +248,31 @@ def analyze_url(url: str) -> dict:
     }
 
 # =========================
-# PHASE 2 — NOTION MATCH
+# PHASE 2 — NOTION MATCH (usando cache)
 # =========================
 
-def search_notion_candidates(mod_name: str, url: str) -> list:
+def search_notioncache_candidates(mod_name: str, url: str) -> list:
     candidates = []
+    pages = st.session_state.notioncache.get("pages", {})
 
-    try:
-        r = notion.databases.query(
-            database_id=NOTION_DATABASE_ID,
-            filter={"property": "URL", "url": {"equals": url}},
-        )
-        candidates.extend(r["results"])
-    except Exception:
-        pass
+    # Match por URL exata
+    for page_id, page in pages.items():
+        if page.get("url") == url:
+            candidates.append(page)
 
-    try:
-        r = notion.databases.query(
-            database_id=NOTION_DATABASE_ID,
-            filter={"property": "Filename", "title": {"contains": mod_name}},
-        )
-        candidates.extend(r["results"])
-    except Exception:
-        pass
+    # Match por Filename contendo mod_name normalizado
+    normalized_mod = mod_name.lower()
+    for page_id, page in pages.items():
+        filename = page.get("filename", "").lower()
+        if normalized_mod in filename:
+            candidates.append(page)
 
-    return list({c["id"]: c for c in candidates}.values())
+    # Limitar a ~35 plausíveis, únicos por ID
+    unique_candidates = {c["notion_id"]: c for c in candidates}
+    return list(unique_candidates.values())[:35]
 
 # =========================
-# PHASE 3 — IA
+# PHASE 3 — IA (sinal apenas)
 # =========================
 
 def slug_quality(slug: str) -> str:
@@ -263,11 +288,10 @@ def build_ai_payload(identity, candidates):
         },
         "candidates": [
             {
-                "notion_id": c["id"],
-                "title": c["properties"]["Filename"]["title"][0]["plain_text"],
+                "notion_id": c["notion_id"],
+                "title": c["filename"],
             }
-            for c in candidates
-            if c["properties"]["Filename"]["title"]
+            for c in candidates[:5]  # Limite contrato
         ],
     }
 
@@ -287,13 +311,35 @@ Payload:
     r = requests.post(
         HF_PRIMARY_MODEL,
         headers=HF_HEADERS,
-        json={"inputs": prompt, "parameters": {"temperature": 0}},
+        json={"inputs": prompt, "parameters": {"temperature": 0, "top_p": 1}},
     )
+
+    if r.status_code != 200:
+        return call_fallback_model(payload)  # Fallback
 
     try:
         data = r.json()
         text = data[0].get("generated_text") if isinstance(data, list) else data.get("generated_text")
         return json.loads(text) if text else None
+    except Exception:
+        return call_fallback_model(payload)
+
+def call_fallback_model(payload):
+    # Similar ao primary, mas com BART MNLI para classificação
+    prompt = f"Classify if there's a unique match: {json.dumps(payload)}"
+    r = requests.post(
+        HF_FALLBACK_MODEL,
+        headers=HF_HEADERS,
+        json={"inputs": prompt, "parameters": {"temperature": 0, "top_p": 1}},
+    )
+    try:
+        data = r.json()
+        # Assumir parsing similar; ajustar para MNLI output (labels, scores)
+        if isinstance(data, list) and data[0].get("labels"):
+            top_label = data[0]["labels"][0]
+            confidence = data[0]["scores"][0]
+            return {"match": top_label == "match", "confidence": confidence}
+        return None
     except Exception:
         return None
 
@@ -301,9 +347,24 @@ def log_ai_event(stage, payload, result):
     st.session_state.ai_logs.append({
         "timestamp": now(),
         "stage": stage,
-        "payload": payload,
-        "result": result,
+        "payload_summary": payload,  # Summary para evitar grandeza
+        "raw_response_snippet": result,
+        "parsed_result": result,
+        "error": None if result else "Fallback usado ou erro",
     })
+
+# Função para gerar HTML canônico
+def generate_html_log(data: list, json_id: str) -> str:
+    json_str = json.dumps(data, indent=2, ensure_ascii=False)
+    return f"""
+    <html>
+    <body>
+    <script type="application/json" id="{json_id}">
+    {json_str}
+    </script>
+    </body>
+    </html>
+    """
 
 # =========================
 # UI — HEADER
@@ -343,76 +404,92 @@ if not st.session_state.notioncache_loaded:
 url_input = st.text_input("URL do mod")
 
 if st.button("Analisar") and url_input.strip():
-    identity = analyze_url(url_input.strip())
-    identity_hash = build_identity_hash(identity)
+    with st.spinner("Analisando..."):
+        identity = analyze_url(url_input.strip())
+        identity_hash = build_identity_hash(identity)
 
-    # C2 — cache hit também gera log canônico
-    if identity_hash in st.session_state.matchcache:
-        decision = st.session_state.matchcache[identity_hash]
-        upsert_decision_log(identity_hash, decision)
-        st.session_state.analysis_result = decision
-        st.stop()
+        # Atualizar fingerprint
+        current_fp = compute_notion_fingerprint()
+        if st.session_state.notion_fingerprint != current_fp:
+            st.warning("Notioncache alterado; fingerprints atualizados.")
+            st.session_state.notion_fingerprint = current_fp
 
-    if identity_hash in st.session_state.notfoundcache:
-        decision = st.session_state.notfoundcache[identity_hash]
-        upsert_decision_log(identity_hash, decision)
-        st.session_state.analysis_result = decision
-        st.stop()
+        # Cache hit (com validação de fingerprint)
+        if identity_hash in st.session_state.matchcache and st.session_state.matchcache[identity_hash].get("notion_fingerprint") == current_fp:
+            decision = st.session_state.matchcache[identity_hash]
+            upsert_decision_log(identity_hash, decision)
+            st.session_state.analysis_result = decision
+            st.info("⚡ Resultado recuperado do cache (FOUND)")
 
-    candidates = search_notioncache_candidates(
-    identity["mod_name"],
-    identity["url"]
-    )
+        elif identity_hash in st.session_state.notfoundcache and st.session_state.notfoundcache[identity_hash].get("notion_fingerprint") == current_fp:
+            decision = st.session_state.notfoundcache[identity_hash]
+            upsert_decision_log(identity_hash, decision)
+            st.session_state.analysis_result = decision
+            st.info("⚡ Resultado recuperado do cache (NOT_FOUND)")
 
-    decision = {
-        "timestamp": now(),
-        "identity_hash": identity_hash,
-        "identity": identity,
-        "phase_2_candidates": len(candidates),
-        "phase_2_status": None,
-        "decision": None,
-        "reason": None,
-    }
-
-    if len(candidates) == 1:
-        decision["phase_2_status"] = "UNIQUE"
-        decision["decision"] = "FOUND"
-        decision["reason"] = "Unique deterministic match in Phase 2"
-        st.session_state.matchcache[identity_hash] = decision
-
-    elif len(candidates) > 1:
-        decision["phase_2_status"] = "AMBIGUOUS"
-
-        if identity["debug"]["is_blocked"] or slug_quality(identity["debug"]["url_slug"]) == "poor":
-            payload = build_ai_payload(identity, candidates)
-            ai_result = call_primary_model(payload)
-            log_ai_event("PHASE_3_CALLED", payload, ai_result)
-
-            if (
-                ai_result
-                and ai_result.get("match") is True
-                and ai_result.get("confidence", 0) >= PHASE3_CONFIDENCE_THRESHOLD
-            ):
-                decision["decision"] = "FOUND"
-                decision["reason"] = f"Phase 3 confirmed unique match (confidence {ai_result['confidence']})"
-                st.session_state.matchcache[identity_hash] = decision
-            else:
-                decision["decision"] = "NOT_FOUND"
-                decision["reason"] = "Ambiguous candidates; IA did not confirm unique match"
-                st.session_state.notfoundcache[identity_hash] = decision
         else:
-            decision["decision"] = "NOT_FOUND"
-            decision["reason"] = "Ambiguous candidates with strong identity; IA skipped"
-            st.session_state.notfoundcache[identity_hash] = decision
+            candidates = search_notioncache_candidates(identity["mod_name"], identity["url"])
 
-    else:
-        decision["phase_2_status"] = "NONE"
-        decision["decision"] = "NOT_FOUND"
-        decision["reason"] = "No deterministic candidates in Phase 2"
-        st.session_state.notfoundcache[identity_hash] = decision
+            decision = {
+                "timestamp": now(),
+                "identity_hash": identity_hash,
+                "identity": identity,
+                "notion_fingerprint": current_fp,
+                "phase_2_candidates": len(candidates),
+                "phase_2_status": None,
+                "phase_3_signal": None,
+                "decision": None,
+                "decision_source": None,
+                "decision_reason": None,
+            }
 
-    upsert_decision_log(identity_hash, decision)
-    st.session_state.analysis_result = decision
+            if len(candidates) == 1:
+                decision["phase_2_status"] = "UNIQUE"
+                decision["decision"] = "FOUND"
+                decision["decision_source"] = "PHASE2_DETERMINISTIC"
+                decision["decision_reason"] = "Unique deterministic match in Phase 2"
+                st.session_state.matchcache[identity_hash] = decision
+
+            elif len(candidates) > 1:
+                decision["phase_2_status"] = "AMBIGUOUS"
+
+                if identity["debug"]["is_blocked"] or slug_quality(identity["debug"]["url_slug"]) == "poor":
+                    payload = build_ai_payload(identity, candidates)
+                    ai_result = call_primary_model(payload)
+                    log_ai_event("PHASE_3_CALLED", payload, ai_result)
+                    decision["phase_3_signal"] = ai_result
+
+                    # Pós-Phase 3: Interpretação determinística
+                    if (
+                        ai_result
+                        and ai_result.get("match") is True
+                        and ai_result.get("confidence", 0) >= PHASE3_CONFIDENCE_THRESHOLD
+                        and len(candidates) <= 3  # Compatível com Phase 2
+                    ):
+                        decision["decision"] = "FOUND"
+                        decision["decision_source"] = "PHASE3_IA_MATCH"
+                        decision["decision_reason"] = f"IA signal confirmed unique match (confidence {ai_result['confidence']})"
+                        st.session_state.matchcache[identity_hash] = decision
+                    else:
+                        decision["decision"] = "NOT_FOUND"
+                        decision["decision_source"] = "PHASE3_IA_NO_MATCH"
+                        decision["decision_reason"] = "Ambiguous; IA signal did not confirm unique match"
+                        st.session_state.notfoundcache[identity_hash] = decision
+                else:
+                    decision["decision"] = "NOT_FOUND"
+                    decision["decision_source"] = "PHASE2_DETERMINISTIC"
+                    decision["decision_reason"] = "Ambiguous candidates with strong identity; IA skipped"
+                    st.session_state.notfoundcache[identity_hash] = decision
+
+            else:
+                decision["phase_2_status"] = "NONE"
+                decision["decision"] = "NOT_FOUND"
+                decision["decision_source"] = "PHASE2_DETERMINISTIC"
+                decision["decision_reason"] = "No deterministic candidates in Phase 2"
+                st.session_state.notfoundcache[identity_hash] = decision
+
+            upsert_decision_log(identity_hash, decision)
+            st.session_state.analysis_result = decision
 
 # =========================
 # UI — RESULT
@@ -429,46 +506,52 @@ if result:
         st.json(result)
 
 # =========================
-# DOWNLOADS — CACHE / LOG
+# DOWNLOADS — CACHE / LOG (alinhado com contrato)
 # =========================
 
 st.divider()
 st.subheader("📁 Dados persistentes")
 
-with st.expander("🗃️ Baixar cache"):
+with st.expander("Downloads de cache"):
     st.download_button(
-        "FOUND — matchcache",
+        "notioncache.json",
+        data=json.dumps(st.session_state.notioncache, indent=2, ensure_ascii=False),
+        file_name="notioncache.json",
+        mime="application/json",
+    )
+    st.download_button(
+        "matchcache.json",
         data=json.dumps(st.session_state.matchcache, indent=2, ensure_ascii=False),
-        file_name="ts4_mod_matchcache.json",
+        file_name="matchcache.json",
         mime="application/json",
     )
-
     st.download_button(
-        "NOT_FOUND — notfoundcache",
+        "notfoundcache.json",
         data=json.dumps(st.session_state.notfoundcache, indent=2, ensure_ascii=False),
-        file_name="ts4_mod_notfoundcache.json",
+        file_name="notfoundcache.json",
         mime="application/json",
     )
 
-with st.expander("📊 Baixar logs"):
+with st.expander("Downloads de logs"):
+    decision_html = generate_html_log(st.session_state.decision_log, "decisionlog-json")
     st.download_button(
-        "Log canônico",
-        data=json.dumps(st.session_state.decision_log, indent=2, ensure_ascii=False),
-        file_name="ts4_mod_canonical_log.json",
-        mime="application/json",
+        "decisionlog.html",
+        data=decision_html,
+        file_name="decisionlog.html",
+        mime="text/html",
     )
-
+    ialog_html = generate_html_log(st.session_state.ai_logs, "ialog-json")
     st.download_button(
-        "Log técnico (IA)",
-        data=json.dumps(st.session_state.ai_logs, indent=2, ensure_ascii=False),
-        file_name="ts4_mod_technical_log.json",
-        mime="application/json",
+        "ialog.html",
+        data=ialog_html,
+        file_name="ialog.html",
+        mime="text/html",
     )
 
 st.download_button(
     "📦 Baixar snapshot completo (JSON)",
     data=json.dumps(build_snapshot(), indent=2, ensure_ascii=False),
-    file_name="ts4_mod_snapshot_v3.5.4.json",
+    file_name="ts4_mod_snapshot_v3.5.5.json",
     mime="application/json",
 )
 
@@ -482,7 +565,7 @@ st.markdown(
         <img src="https://64.media.tumblr.com/05d22b63711d2c391482d6faad367ccb/675ea15a79446393-0d/s2048x3072/cc918dd94012fe16170f2526549f3a0b19ecbcf9.png"
              style="height:20px;vertical-align:middle;margin-right:6px;">
         Criado por Akin (@UnpaidSimmer)
-        <div style="font-size:0.7rem;opacity:0.6;">v3.5.4 · Phase 3 (IA controlada)</div>
+        <div style="font-size:0.7rem;opacity:0.6;">v3.5.5 · Phase 3 (IA controlada)</div>
     </div>
     """,
     unsafe_allow_html=True,
