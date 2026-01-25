@@ -424,9 +424,9 @@ if st.button("Analisar") and url_input.strip():
     st.markdown(f"[🔗 Abrir no Notion]({notion_url})")
 
 else:
-        decision["decision"] = "NOT_FOUND"
-        decision["reason"] = "Ambiguous or no candidates"
-        st.session_state.notfoundcache[identity_hash] = decision
+    decision["decision"] = "NOT_FOUND"
+    decision["reason"] = "Ambiguous or no candidates"
+    st.session_state.notfoundcache[identity_hash] = decision
 
 upsert_decision_log(identity_hash, decision)
 st.session_state.analysis_result = decision
