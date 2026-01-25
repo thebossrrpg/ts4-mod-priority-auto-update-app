@@ -429,7 +429,7 @@ else:
         st.session_state.notfoundcache[identity_hash] = decision
 
 upsert_decision_log(identity_hash, decision)
-    st.session_state.analysis_result = decision
+st.session_state.analysis_result = decision
 
 # =========================
 # UI — RESULTADO (CANÔNICO · RECONSTRUÍDO)
