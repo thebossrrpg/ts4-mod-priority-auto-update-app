@@ -1,6 +1,6 @@
 # ============================================================
 # TS4 Mod Analyzer — Phase 1 → Phase 3 (Hugging Face IA)
-# Version: v3.5.6  # Bump para update fixes de contrato (aditivo)
+# Version: v3.5.65  # Bump para update fixes de contrato (aditivo)
 #
 # Contract:
 # - Phase 1 preserved (identity extraction)
@@ -32,7 +32,7 @@ from datetime import datetime
 # =========================
 
 st.set_page_config(
-    page_title="TS4 Mod Analyzer — Phase 3 · v3.5.6",
+    page_title="TS4 Mod Analyzer — Phase 3 · v3.5.65",
     layout="centered"
 )
 
@@ -143,17 +143,17 @@ def build_identity_hash(identity: dict) -> str:
 # NOTIONCACHE LOADER
 # =========================
 
-def load_notioncache(data: dict):
-    # Validar schema mínimo
-    if "pages" not in data.get("pages", {}):
-        raise ValueError("Schema inválido: faltam 'pages'")
-    st.session_state.notioncache = data
-    st.session_state.matchcache = data.get("matchcache", {})
-    st.session_state.notfoundcache = data.get("notfoundcache", {})
-    st.session_state.decision_log = data.get("decision_log", [])
-    st.session_state.notion_fingerprint = compute_notion_fingerprint()
-    st.session_state.notioncache_loaded = True
-    st.session_state.analysis_result = None
+ def load_notioncache(data: dict):
++    # Validar schema mínimo (pages deve existir no nível raiz)
++    if "pages" not in data or not isinstance(data["pages"], dict):
++        raise ValueError("Schema inválido: 'pages' ausente ou inválido")
+     st.session_state.notioncache = data
+     st.session_state.matchcache = data.get("matchcache", {})
+     st.session_state.notfoundcache = data.get("notfoundcache", {})
+     st.session_state.decision_log = data.get("decision_log", [])
+     st.session_state.notion_fingerprint = compute_notion_fingerprint()
+     st.session_state.notioncache_loaded = True
+     st.session_state.analysis_result = None
 
 # =========================
 # SNAPSHOT (alinhado com schema canônico)
@@ -163,7 +163,7 @@ def build_snapshot():
     return {
         "meta": {
             "app": "TS4 Mod Analyzer",
-            "version": "v3.5.6",
+            "version": "v3.5.65",
             "created_at": now(),
             "phase_2_fingerprint": st.session_state.notion_fingerprint,
         },
@@ -557,7 +557,7 @@ with st.expander("Downloads de logs"):
 st.download_button(
     "📦 Baixar snapshot completo (JSON)",
     data=json.dumps(build_snapshot(), indent=2, ensure_ascii=False),
-    file_name="ts4_mod_snapshot_v3.5.6.json",
+    file_name="ts4_mod_snapshot_v3.5.65.json",
     mime="application/json",
 )
 
@@ -571,7 +571,7 @@ st.markdown(
         <img src="https://64.media.tumblr.com/05d22b63711d2c391482d6faad367ccb/675ea15a79446393-0d/s2048x3072/cc918dd94012fe16170f2526549f3a0b19ecbcf9.png"
              style="height:20px;vertical-align:middle;margin-right:6px;">
         Criado por Akin (@UnpaidSimmer)
-        <div style="font-size:0.7rem;opacity:0.6;">v3.5.6 · Phase 3 (IA controlada)</div>
+        <div style="font-size:0.7rem;opacity:0.6;">v3.5.65 · Phase 3 (IA controlada)</div>
     </div>
     """,
     unsafe_allow_html=True,
