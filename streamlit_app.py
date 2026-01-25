@@ -406,10 +406,23 @@ if st.button("Analisar") and url_input.strip():
             "reason": None,
         }
 
-        if len(candidates) == 1:
-            decision["decision"] = "FOUND"
-            decision["reason"] = "Unique deterministic match"
-            st.session_state.matchcache[identity_hash] = decision
+        if candidates:
+            decision_record["decision"] = "FOUND"
+            matched = candidates[0]  # determinístico
+            props = matched.get("properties", {})
+            title_prop = props.get("Filename") or props.get("Name")
+
+    mod_title = "—"
+    if title_prop and title_prop.get("title"):
+        mod_title = title_prop["title"][0]["plain_text"]
+
+    notion_id = matched.get("id")
+    notion_url = f"https://www.notion.so/{notion_id.replace('-', '')}"
+
+    st.success("Match encontrado no Notion.")
+    st.markdown(f"**📄 {mod_title}**")
+    st.markdown(f"[🔗 Abrir no Notion]({notion_url})")
+
         else:
             decision["decision"] = "NOT_FOUND"
             decision["reason"] = "Ambiguous or no candidates"
@@ -419,13 +432,81 @@ if st.button("Analisar") and url_input.strip():
         st.session_state.analysis_result = decision
 
 # =========================
-# UI — RESULT
+# UI — RESULTADO (CANÔNICO · RECONSTRUÍDO)
 # =========================
 
-if st.session_state.analysis_result:
-    st.subheader("📦 Mod")
-    st.write(st.session_state.analysis_result["identity"]["mod_name"])
-    st.success(st.session_state.analysis_result["decision"])
+result = st.session_state.analysis_result
+
+if result:
+    st.divider()
+    st.subheader("📦 Mod analisado")
+
+    # Nome do mod — fallback em cascata (contrato)
+    mod_name = (
+        result.get("mod_name")
+        or result.get("debug", {}).get("og_title")
+        or result.get("debug", {}).get("page_title")
+        or result.get("debug", {}).get("url_slug")
+        or "Unnamed Mod"
+    )
+
+    st.markdown(f"**Nome:** {mod_name}")
+    st.markdown(f"**URL:** {result.get('url')}")
+
+    decision = result.get("decision")
+
+    st.markdown("---")
+
+# =========================
+# DECISÃO FINAL
+# =========================
+
+if decision == "FOUND":
+    st.success("✅ Mod encontrado no Notion")
+
+    # Fonte da decisão
+    source = result.get("decision_source", "UNKNOWN")
+    st.caption(f"Resolvido por: **{source}**")
+
+    candidates = result.get("candidates", [])
+
+    if candidates:
+        st.markdown("### 📚 Entradas no Notion")
+        for c in candidates:
+            page_id = c["id"]
+            page_url = f"https://www.notion.so/{page_id.replace('-', '')}"
+            title = (
+                c.get("properties", {})
+                .get("Filename", {})
+                .get("title", [{}])[0]
+                .get("plain_text", "Sem título")
+            )
+            st.markdown(f"- [{title}]({page_url})")
+    else:
+        st.warning("Match confirmado, mas sem candidatos listáveis (cache).")
+
+elif decision == "NOT_FOUND":
+    st.info("ℹ️ Nenhuma entrada correspondente encontrada no Notion")
+
+    reason = result.get("decision_reason", "Motivo não especificado")
+    st.markdown(f"**Motivo:** {reason}")
+
+    if result.get("decision_source") == "PHASE3_IA":
+        st.caption("IA foi acionada como último recurso (Phase 3).")
+    else:
+        st.caption("Decisão determinística (Phase 2).")
+
+else:
+    st.warning("⚠️ Estado de decisão não reconhecido")
+    st.json(result)
+
+# =========================
+# DEBUG (COLAPSÁVEL)
+# =========================
+
+with st.expander("🔍 Debug técnico"):
+    st.json(result.get("debug", {}))
+
 
 # =========================
 # FOOTER (CANÔNICO — PRESERVADO)
