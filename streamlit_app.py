@@ -406,16 +406,19 @@ if st.button("Analisar") and url_input.strip():
             "reason": None,
         }
 
-        if candidates:
-        decision["decision"] = "FOUND"  # <--- Corrigido de 'decision_record' para 'decision'
-        matched = candidates # determinístico
+       if candidates:
+        decision["decision"] = "FOUND"  # <--- Agora com indentação correta
+        matched = candidates # Pega o primeiro candidato da lista
         
         props = matched.get("properties", {})
         title_prop = props.get("Filename") or props.get("Name")
         
         mod_title = "—"
         if title_prop and title_prop.get("title"):
-            mod_title = title_prop["title"]["plain_text"]
+            # Verifica se a lista 'title' não está vazia antes de acessar o índice 0
+            title_list = title_prop.get("title", [])
+            if title_list:
+                mod_title = title_list.get("plain_text", "—")
             
         notion_id = matched.get("id")
         notion_url = f"https://www.notion.so/{notion_id.replace('-', '')}"
