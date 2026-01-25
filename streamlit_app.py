@@ -406,41 +406,41 @@ if st.button("Analisar") and url_input.strip():
             "reason": None,
         }
 
-       if candidates:
-        decision["decision"] = "FOUND"  # <--- Agora com indentação correta
-        matched = candidates # Pega o primeiro candidato da lista
+		if candidates:
+			decision["decision"] = "FOUND"  # <--- Agora com indentação correta
+			matched = candidates # Pega o primeiro candidato da lista
         
-        props = matched.get("properties", {})
-        title_prop = props.get("Filename") or props.get("Name")
+			props = matched.get("properties", {})
+			title_prop = props.get("Filename") or props.get("Name")
         
-        mod_title = "—"
-        if title_prop and title_prop.get("title"):
-            # Verifica se a lista 'title' não está vazia antes de acessar o índice 0
-            title_list = title_prop.get("title", [])
-            if title_list:
-                mod_title = title_list.get("plain_text", "—")
+			mod_title = "—"
+			if title_prop and title_prop.get("title"):
+				# Verifica se a lista 'title' não está vazia antes de acessar o índice 0
+				title_list = title_prop.get("title", [])
+				if title_list:
+					mod_title = title_list.get("plain_text", "—")
             
-        notion_id = matched.get("id")
-        notion_url = f"https://www.notion.so/{notion_id.replace('-', '')}"
+				notion_id = matched.get("id")
+				notion_url = f"https://www.notion.so/{notion_id.replace('-', '')}"
         
-        st.success("Match encontrado no Notion.")
-        st.markdown(f"**📄 {mod_title}**")
-        st.markdown(f"[🔗 Abrir no Notion]({notion_url})")
+				st.success("Match encontrado no Notion.")
+				st.markdown(f"**📄 {mod_title}**")
+				st.markdown(f"[🔗 Abrir no Notion]({notion_url})")
         
-    if title_prop and title_prop.get("title"):
-        mod_title = title_prop["title"][0]["plain_text"]
+		if title_prop and title_prop.get("title"):
+			mod_title = title_prop["title"][0]["plain_text"]
 
-    notion_id = matched.get("id")
-    notion_url = f"https://www.notion.so/{notion_id.replace('-', '')}"
+			notion_id = matched.get("id")
+			notion_url = f"https://www.notion.so/{notion_id.replace('-', '')}"
 
-    st.success("Match encontrado no Notion.")
-    st.markdown(f"**📄 {mod_title}**")
-    st.markdown(f"[🔗 Abrir no Notion]({notion_url})")
+			st.success("Match encontrado no Notion.")
+			st.markdown(f"**📄 {mod_title}**")
+			st.markdown(f"[🔗 Abrir no Notion]({notion_url})")
 
-else:
-    decision["decision"] = "NOT_FOUND"
-    decision["reason"] = "Ambiguous or no candidates"
-    st.session_state.notfoundcache[identity_hash] = decision
+		else:
+			decision["decision"] = "NOT_FOUND"
+			decision["reason"] = "Ambiguous or no candidates"
+			st.session_state.notfoundcache[identity_hash] = decision
 
 upsert_decision_log(identity_hash, decision)
 st.session_state.analysis_result = decision
