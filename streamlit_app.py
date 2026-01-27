@@ -1,6 +1,6 @@
 # ============================================================
 # TS4 Mod Analyzer — Phase 1 → Phase 3 (Hugging Face IA)
-# Version: v3.5.7.1 — UI Result Stabilization (patched)
+# Version: v3.5.7.2 — Snapshot Import UI Separation (patched)
 #
 # Contract:
 # - Phase 1 preserved (identity extraction from URL + HTML)
@@ -10,8 +10,17 @@
 #   • Interprets IA signals deterministically
 #   • Produces FINAL decision (FOUND / NOT_FOUND)
 #
+# Patch scope (additive):
+# - Introduces dedicated Snapshot import UI
+# - Separates Snapshot import from notioncache import
+# - Snapshot:
+#   • Hydrated via hydrate_session_state(snapshot)
+#   • Marked with explicit session flag (snapshot_loaded)
+# - Notioncache importer unchanged and isolated to Phase 2
+#
 # ADDITIVE ONLY — Contract preserved
 # ============================================================
+
 
 import streamlit as st
 import requests
@@ -28,7 +37,7 @@ from datetime import datetime, timezone  # <--- Adicionado timezone
 # =========================
 
 st.set_page_config(
-    page_title="TS4 Mod Analyzer — Phase 3 · v3.5.7.1",
+    page_title="TS4 Mod Analyzer — Phase 3 · v3.5.7.2",
     layout="centered"
 )
 
@@ -69,8 +78,12 @@ if "notioncache" not in st.session_state:
 if "notioncache_loaded" not in st.session_state:
     st.session_state.notioncache_loaded = False
 
+if "snapshot_loaded" not in st.session_state:
+    st.session_state.snapshot_loaded = False
+
 if "notion_fingerprint" not in st.session_state:
     st.session_state.notion_fingerprint = None
+
 
 # =========================
 # CONFIG
@@ -167,7 +180,7 @@ def build_snapshot():
     return {
         "meta": {
             "app": "TS4 Mod Analyzer",
-            "version": "v3.5.7.1",
+            "version": "v3.5.7.2",
             "created_at": now(),
             "phase_2_fingerprint": st.session_state.notion_fingerprint,
         },
@@ -329,6 +342,26 @@ if persisted and not st.session_state.notioncache_loaded:
 # =========================
 
 with st.sidebar:
+    with st.expander("📥 Importar Snapshot (estado completo)", expanded=False):
+        if not st.session_state.snapshot_loaded:
+            uploaded_snapshot = st.file_uploader(
+                "Snapshot JSON",
+                type="json",
+                key="snapshot_uploader"
+            )
+
+            if uploaded_snapshot:
+                try:
+                    snapshot = json.load(uploaded_snapshot)
+                    hydrate_session_state(snapshot)
+                    st.session_state.snapshot_loaded = True
+                    st.success("Snapshot importado com sucesso.")
+                    st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"Erro ao importar snapshot: {e}")
+        else:
+            st.info("Snapshot já carregado nesta sessão.")
+
     with st.expander("📥 Importar notioncache", expanded=False):
         uploaded_cache = st.file_uploader("Arquivo JSON", type="json")
         if uploaded_cache:
@@ -504,7 +537,7 @@ st.markdown(
         <img src="https://64.media.tumblr.com/05d22b63711d2c391482d6faad367ccb/675ea15a79446393-0d/s2048x3072/cc918dd94012fe16170f2526549f3a0b19ecbcf9.png"
              style="height:20px;vertical-align:middle;margin-right:6px;">
         Criado por Akin (@UnpaidSimmer)
-        <div style="font-size:0.7rem;opacity:0.6;">v3.5.7.1 · Phase 3</div>
+        <div style="font-size:0.7rem;opacity:0.6;">v3.5.7.2 · Phase 3</div>
     </div>
     """,
     unsafe_allow_html=True,
