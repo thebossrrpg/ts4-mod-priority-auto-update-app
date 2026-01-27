@@ -413,12 +413,19 @@ if st.button("Analisar") and url_input.strip():
             notion_id = matched.get("id") or matched.get("notion_id")
             notion_url = f"https://www.notion.so/{notion_id.replace('-', '')}" if notion_id else None
 
+            display_name = (
+                matched.get("title")
+                or matched.get("filename")
+            )
+
             decision.update({
                 "decision": "FOUND",
                 "reason": "Deterministic match (Phase 2)",
                 "notion_id": notion_id,
                 "notion_url": notion_url,
+                "display_name": display_name,
             })
+
 
             st.session_state.matchcache[identity_hash] = decision
 
@@ -452,13 +459,14 @@ st.subheader("📦 Mod analisado")
 # Identidade (fallback em cascata conforme contrato)
 identity = result.get("identity", {})
 
-mod_name = identity.get("mod_name", "Unnamed Mod")
-url = identity.get("url")
+mod_name = (
+    result.get("display_name")
+    or identity.get("mod_name")
+    or "—"
+)
 
 st.markdown(f"**Nome:** {mod_name}")
-st.markdown(f"**URL:** {url}")
 
-st.markdown("---")
 
 # =========================
 # DECISÃO FINAL
