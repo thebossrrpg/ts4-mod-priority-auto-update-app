@@ -25,6 +25,37 @@ st.set_page_config(
     layout="centered"
 )
 
+st.markdown(
+    """
+    <style>
+    .global-footer {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        background-color: rgba(17, 24, 39, 0.95);
+        text-align: center;
+        padding: 0.75rem 0;
+        font-size: 0.8rem;
+        color: #9ca3af;
+        z-index: 999;
+    }
+
+    .global-footer img {
+        height: 20px;
+        vertical-align: middle;
+        margin-right: 6px;
+    }
+
+    /* Evita que o footer cubra o conteúdo */
+    .block-container {
+        padding-bottom: 4rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # =========================
 # PERSISTÊNCIA LOCAL (notioncache)
 # =========================
@@ -379,17 +410,18 @@ if (
 def render_footer():
     st.markdown(
         """
-        <div style="text-align:center;padding:1rem 0;font-size:0.85rem;color:#6b7280;">
-            <img src="https://64.media.tumblr.com/05d22b63711d2c391482d6faad367ccb/675ea15a79446393-0d/s2048x3072/cc918dd94012fe16170f2526549f3a0b19ecbcf9.png"
-                 style="height:20px;vertical-align:middle;margin-right:6px;">
+        <div class="global-footer">
+            <img src="https://64.media.tumblr.com/05d22b63711d2c391482d6faad367ccb/675ea15a79446393-0d/s2048x3072/cc918dd94012fe16170f2526549f3a0b19ecbcf9.png">
             Criado por Akin (@UnpaidSimmer)
-            <div style="font-size:0.7rem;opacity:0.6;">v3.5.7.2 · Phase 3</div>
+            <div style="font-size:0.7rem;opacity:0.6;">
+                v3.5.7.2 · Phase 3
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-render_footer()  # 👈 ESSENCIAL
+render_footer()
 
 
 # =========================
