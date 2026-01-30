@@ -1,10 +1,9 @@
 # ============================================================
-# TS4 Mod Analyzer — Phase 1 → Phase 3 (Hugging Face IA)
-# Version: v3.5.7.2 — Closed
+# TS4 Mod Analyzer — Phase 1 → Phase 4
+# Version: v1.6 — Priority Classification
 #
 # ADDITIVE ONLY — Contract preserved
 # ============================================================
-
 
 import streamlit as st
 import requests
@@ -99,6 +98,9 @@ if "snapshot_loaded" not in st.session_state:
 if "notion_fingerprint" not in st.session_state:
     st.session_state.notion_fingerprint = None
 
+if "phase4_cache" not in st.session_state:
+    st.session_state.phase4_cache = {}
+
 
 # =========================
 # CONFIG
@@ -161,6 +163,9 @@ def hydrate_session_state(snapshot: dict):
     """
     Restaura o estado do app a partir de um snapshot canônico.
     """
+
+def phase4_already_processed(identity_hash: str) -> bool:
+    return identity_hash in st.session_state.phase4_cache
 
     # =========================
     # Phase 2 — Fonte de verdade
@@ -246,6 +251,7 @@ def build_snapshot():
         },
         "phase_2_cache": st.session_state.notioncache,
         "phase_3_cache": st.session_state.matchcache,
+        "phase_4_cache": st.session_state.phase4_cache,  # ← NOVO
         "canonical_log": st.session_state.decision_log,
     }
 
@@ -604,6 +610,66 @@ elif decision == "NOT_FOUND":
 else:
     st.warning("⚠️ Estado de decisão inválido")
 
+# =========================
+# PHASE 4 — PRIORITY CLASSIFICATION (ADDITIVE)
+# =========================
+
+if decision == "FOUND":
+    identity_hash = result.get("identity_hash")
+    notion_id = result.get("notion_id")
+
+    with st.expander("🔢 Phase 4 — Priority classification", expanded=False):
+
+        # Proteções canônicas
+        if not identity_hash or not notion_id:
+            st.warning("⚠️ Dados insuficientes para Phase 4.")
+            st.stop()
+
+        if phase4_already_processed(identity_hash):
+            cached = st.session_state.phase4_cache[identity_hash]
+            st.success("✅ Prioridade já avaliada anteriormente.")
+            st.markdown(f"**Resultado:** {cached['priority']} ({cached['sub_category']})")
+            st.markdown(f"**Origem:** {cached['source']}")
+            st.stop()
+
+        st.info(
+            "A classificação de prioridade será baseada **exclusivamente** "
+            "nos dados já existentes no Notion."
+        )
+
+        # 🔒 STUB — substituído por IA depois
+        suggested_priority = None
+        suggested_sub = None
+        source = "AUTO"
+
+        if st.button("Avaliar prioridade"):
+            # ⛔ Nenhuma IA ainda — stub consciente
+            suggested_priority = "4"
+            suggested_sub = "4D — Milestones"
+
+            st.session_state.phase4_cache[identity_hash] = {
+                "priority": suggested_priority,
+                "sub_category": suggested_sub,
+                "source": source,
+                "timestamp": now(),
+            }
+
+            # Log técnico (auditável)
+            st.session_state.ai_logs.append({
+                "timestamp": now(),
+                "stage": "PHASE_4_STUB",
+                "identity_hash": identity_hash,
+                "result": st.session_state.phase4_cache[identity_hash],
+            })
+
+            st.success("🔢 Classificação sugerida com sucesso.")
+            st.markdown(
+                f"""
+**Priority:** {suggested_priority}  
+**Subcategoria:** {suggested_sub}  
+**Origem:** {source}
+"""
+            )
 
 # =========================
 # DEBUG (COLAPSÁVEL)
