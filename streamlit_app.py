@@ -366,37 +366,21 @@ if st.button("Analisar") and url_input.strip():
             }
 
             if candidates:
-    # pega o melhor match determinístico (primeiro da lista)
-    matched = candidates[0]
+                # pega o melhor match determinístico (primeiro da lista)
+                matched = candidates[0]
 
-    notion_id = matched.get("id") or matched.get("notion_id")
-    notion_url = f"https://www.notion.so/{notion_id.replace('-', '')}" if notion_id else None
+                notion_id = matched.get("id") or matched.get("notion_id")
+                notion_url = f"https://www.notion.so/{notion_id.replace('-', '')}" if notion_id else None
 
-    # Tratamento seguro de títulos aninhados
-    props = matched.get("properties", {})
-    title_prop = props.get("Filename") or props.get("Name")
-    title_list = title_prop.get("title", []) if title_prop else []
-    # title_list é lista de objetos; pegamos o primeiro item
-    if title_list and isinstance(title_list, list):
-        mod_title = title_list[0].get("plain_text", "Unknown")
-    else:
-        mod_title = "Unknown"
+                # Tratamento seguro de títulos aninhados
+                props = matched.get("properties", {})
+                title_prop = props.get("Filename") or props.get("Name")
+                title_list = title_prop.get("title", []) if title_prop else []
 
-    decision.update({
-        "decision": "FOUND",
-        "reason": "Deterministic match (Phase 2)",
-        "notion_id": notion_id,
-        "notion_url": notion_url,
-        "display_name": mod_title,
-    })
-    st.session_state.matchcache[identity_hash] = decision
-else:
-    decision.update({
-        "decision": "NOT_FOUND",
-        "reason": "No candidates found",
-    })
-    st.session_state.notfoundcache[identity_hash] = decision
-
+                if title_list and isinstance(title_list, list):
+                    mod_title = title_list[0].get("plain_text", "Unknown")
+                else:
+                    mod_title = "Unknown"
 
                 decision.update({
                     "decision": "FOUND",
