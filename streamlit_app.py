@@ -258,3 +258,6 @@ if result and result.get("decision") == "FOUND":
                 out = phase4_process(identity_hash, notion_id)
                 st.success("Sugestão gerada")
                 st.json(out)
+
+st.write("UI BASE CHEGOU AQUI")
+st.sidebar.write("SIDEBAR BASE CHEGOU AQUI")
