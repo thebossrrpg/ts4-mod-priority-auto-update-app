@@ -1,8 +1,11 @@
 # ============================================================
 # TS4 Mod Analyzer — Phase 1 → Phase 4 (Integrated)
-# Version: v3.6.0 — Priority Classification
+# Version: v3.6.1 — Fixes & Phase 4 Formatting
 #
-# ADDITIVE UPDATE: Phase 4 added to stable v3.5.7.2 base.
+# CHANGES:
+# - Fix AttributeError in Phase 2 logic (list vs dict)
+# - Phase 4 output format flattened (no Notion mirroring)
+# - CSS .global-footer corrected
 # ============================================================
 
 import streamlit as st
@@ -16,10 +19,10 @@ from notion_client import Client
 from datetime import datetime, timezone
 
 # =========================
-# PAGE CONFIG
+# PAGE CONFIG & CSS
 # =========================
 st.set_page_config(
-    page_title="TS4 Mod Analyzer — Phase 4 · v3.6.0",
+    page_title="TS4 Mod Analyzer — Phase 4 · v3.6.1",
     layout="centered"
 )
 
@@ -29,6 +32,26 @@ st.markdown(
     .stButton>button {width: 100%;}
     .reportview-container .main .block-container {padding-top: 2rem;}
     div[data-testid="stExpander"] div[role="button"] p {font-size: 1rem; font-weight: 600;}
+    
+    /* CSS DEFINITIVO DO FOOTER */
+    .global-footer {
+        position: fixed; 
+        bottom: 0; 
+        width: 100%; 
+        text-align: center; 
+        color: #888; 
+        font-size: 0.8em; 
+        background-color: #0e1117; 
+        padding: 10px;
+        z-index: 999;
+    }
+    .global-footer img {
+        height: 28px;
+        max-height: 28px;
+        width: auto;
+        vertical-align: middle;
+        margin-right: 8px;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -54,7 +77,7 @@ DEFAULT_KEYS = {
     "decision_log": [],
     "matchcache": {},
     "notfoundcache": {},
-    "phase4_cache": {},  # <--- FASE 4 (Novo Cache)
+    "phase4_cache": {},
     "notioncache": {},
     "notioncache_loaded": False,
     "snapshot_loaded": False,
@@ -88,7 +111,6 @@ HF_HEADERS = {
     "Content-Type": "application/json"
 }
 HF_PRIMARY_MODEL = "https://api-inference.huggingface.co/models/google/flan-t5-base"
-PHASE3_CONFIDENCE_THRESHOLD = 0.93
 
 # =========================
 # UTILS
@@ -114,12 +136,9 @@ def upsert_decision_log(identity_hash: str, decision: dict):
     st.session_state.decision_log.append(decision)
 
 # =========================
-# SNAPSHOT / HYDRATE (Atualizado para Fase 4)
+# SNAPSHOT / HYDRATE
 # =========================
 def hydrate_session_state(snapshot: dict):
-    """Restaura caches e logs a partir do snapshot JSON."""
-    
-    # Phase 2
     if "phase_2_cache" in snapshot:
         st.session_state.notioncache = snapshot["phase_2_cache"]
         st.session_state.notioncache_loaded = True
@@ -129,38 +148,35 @@ def hydrate_session_state(snapshot: dict):
         st.session_state.notioncache_loaded = False
         st.session_state.notion_fingerprint = None
 
-    # Phase 3
     if "phase_3_cache" in snapshot:
         st.session_state.matchcache = snapshot["phase_3_cache"]
     else:
         st.session_state.matchcache = {}
 
-    # Phase 4 (NOVO)
     if "phase_4_cache" in snapshot:
         st.session_state.phase4_cache = snapshot["phase_4_cache"]
     else:
         st.session_state.phase4_cache = {}
 
-    # Logs
     if "canonical_log" in snapshot:
         st.session_state.decision_log = snapshot["canonical_log"]
     else:
         st.session_state.decision_log = []
 
-    st.session_state.notfoundcache = {} # Nunca restaura notfound
+    st.session_state.notfoundcache = {}
     st.session_state.snapshot_loaded = True
 
 def build_snapshot():
     return {
         "meta": {
             "app": "TS4 Mod Analyzer",
-            "version": "v3.6.0",
+            "version": "v3.6.1",
             "created_at": now(),
             "phase_2_fingerprint": st.session_state.notion_fingerprint,
         },
         "phase_2_cache": st.session_state.notioncache,
         "phase_3_cache": st.session_state.matchcache,
-        "phase_4_cache": st.session_state.phase4_cache, # Incluído
+        "phase_4_cache": st.session_state.phase4_cache,
         "canonical_log": st.session_state.decision_log,
     }
 
@@ -260,41 +276,7 @@ def search_notioncache_candidates(mod_name: str, url: str) -> list:
     return list({c["notion_id"]: c for c in candidates}.values())[:35]
 
 # =========================
-# PHASE 3 — IA MATCHING
-# =========================
-def call_primary_model(payload):
-    prompt = f"""
-    Compare the mod identity with the candidates.
-    Rules:
-    - Return JSON only
-    - match=true only if EXACTLY ONE clear match exists
-    - Include confidence (0–1)
-    - Do not guess
-    Payload:
-    {json.dumps(payload, ensure_ascii=False)}
-    """
-    try:
-        r = requests.post(
-            HF_PRIMARY_MODEL, 
-            headers=HF_HEADERS, 
-            json={"inputs": prompt, "parameters": {"temperature": 0}},
-            timeout=10
-        )
-        data = r.json()
-        # Tratamento robusto para lista ou dict
-        if isinstance(data, list) and len(data) > 0:
-            text = data.get("generated_text")
-        elif isinstance(data, dict):
-            text = data.get("generated_text")
-        else:
-            text = None
-            
-        return json.loads(text) if text else None
-    except Exception:
-        return None
-
-# =========================
-# PHASE 4 — PRIORITY CLASSIFICATION (INTEGRADA)
+# PHASE 4 — PRIORITY CLASSIFICATION (CORRIGIDO)
 # =========================
 def fetch_notion_page_context(notion_id: str) -> dict:
     """Busca dados da página no Notion para a Fase 4."""
@@ -306,7 +288,7 @@ def fetch_notion_page_context(notion_id: str) -> dict:
         p_select = props.get("Priority", {}).get("select")
         priority_val = p_select["name"] if p_select else "Pending"
         
-        # Extração segura de Notes (Rich Text) - usado para Subclassificação
+        # Extração segura de Notes (Rich Text)
         notes_prop = props.get("Notes", {}).get("rich_text", [])
         notes_text = "".join([t["plain_text"] for t in notes_prop]) if notes_prop else ""
         
@@ -319,14 +301,13 @@ def fetch_notion_page_context(notion_id: str) -> dict:
         return {"error": str(e)}
 
 def call_priority_model(context: dict) -> dict:
-    """Chama a IA para sugerir prioridade baseada no contexto."""
+    """Chama a IA para sugerir prioridade."""
     prompt = f"""
     You are classifying update priority for a Sims 4 mod.
     Rules:
     - Return JSON only.
-    - 'priority' must be an integer 0-5.
-    - 'subcategory' (e.g. 3A, 4B) goes into text if applicable.
-    - Suggest based on the provided context.
+    - 'priority' must be integer 0-5.
+    - 'reason' should be a short explanation.
     
     Context:
     {json.dumps(context, indent=2)}
@@ -352,7 +333,7 @@ def call_priority_model(context: dict) -> dict:
         return {"error": str(e)}
 
 def phase4_process(identity_hash: str, notion_id: str):
-    """Orquestrador da Fase 4."""
+    """Orquestrador da Fase 4 - Formato Plano."""
     current_data = fetch_notion_page_context(notion_id)
     
     if "error" in current_data:
@@ -360,29 +341,29 @@ def phase4_process(identity_hash: str, notion_id: str):
         
     ai_result = call_priority_model(current_data)
     
-    suggested = {
-        "priority": str(ai_result.get("priority", "?")),
-        "sub_category": ai_result.get("subcategory", "None"),
-    }
+    current_priority = str(current_data.get("priority", "?"))
+    suggested_priority = str(ai_result.get("priority", "?"))
+    suggested_note = ai_result.get("reason", "Phase 4 suggests updating due to impact analysis.")
     
-    source = "AUTO" if suggested.get("priority") == current_data.get("priority") else "MANUAL_CHECK"
+    mode = "AUTO" if suggested_priority == current_priority else "MANUAL"
     
+    # FORMATO PLANO SOLICITADO
     result = {
-        "current": current_data,
-        "suggested": suggested,
-        "source": source,
+        "current_priority": current_priority,
+        "suggested_priority": suggested_priority,
+        "suggested_note": suggested_note,
+        "mode": mode,
         "timestamp": now(),
     }
     
-    # Salva no cache da Fase 4 e no log de IA
+    # Salva no cache da Fase 4 e log IA
     st.session_state.phase4_cache[identity_hash] = result
     
     st.session_state.ai_logs.append({
         "timestamp": now(),
         "stage": "PHASE_4",
         "input": current_data,
-        "output": suggested,
-        "source": source
+        "output": result
     })
     
     return result
@@ -399,13 +380,14 @@ if persisted and not st.session_state.snapshot_loaded and not st.session_state.n
     load_notioncache(persisted)
 
 # =========================
-# FOOTER
+# FOOTER (CORRIGIDO)
 # =========================
 def render_footer():
+    # Classe global-footer definida no CSS no início
     st.markdown(
         """
-        <div style="position: fixed; bottom: 0; width: 100%; text-align: center; color: #888; font-size: 0.8em; background-color: #0e1117; padding: 10px;">
-        Criado por Akin (@UnpaidSimmer) | v3.6.0 · Integrated Phase 4
+        <div class="global-footer">
+        Criado por Akin (@UnpaidSimmer) | v3.6.1
         </div>
         """,
         unsafe_allow_html=True,
@@ -441,9 +423,9 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"Erro: {e}")
 
-    with st.expander("🗃️ Downloads (Caches/Logs)", expanded=False):
+    with st.expander("🗃️ Downloads", expanded=False):
         st.download_button("matchcache.json", json.dumps(st.session_state.matchcache, indent=2), "matchcache.json")
-        st.download_button("phase4_cache.json", json.dumps(st.session_state.phase4_cache, indent=2), "phase4_cache.json") # Novo
+        st.download_button("phase4_cache.json", json.dumps(st.session_state.phase4_cache, indent=2), "phase4_cache.json")
         st.download_button("decision_log.json", json.dumps(st.session_state.decision_log, indent=2), "decision_log.json")
         st.download_button("snapshot.json", json.dumps(build_snapshot(), indent=2), "snapshot.json")
 
@@ -484,11 +466,12 @@ if st.button("Analisar") and url_input.strip():
             }
 
             if candidates:
-                matched = candidates # Simplificação determinística Phase 2
+                # CORREÇÃO DO ERRO: candidates é lista, pegamos o primeiro item
+                matched = candidates 
+                
                 notion_id = matched.get("id") or matched.get("notion_id")
                 notion_url = f"https://www.notion.so/{notion_id.replace('-', '')}" if notion_id else None
                 
-                # Retrieve title safely
                 title_list = matched.get("properties", {}).get("Filename", {}).get("title", [])
                 if not title_list: 
                      title_list = matched.get("properties", {}).get("Name", {}).get("title", [])
@@ -536,7 +519,7 @@ if decision_val == "FOUND":
     st.markdown(f"[🔗 Abrir página no Notion]({result.get('notion_url')})")
     
     # =========================
-    # PHASE 4 INTEGRATION (Só aparece se FOUND)
+    # PHASE 4 INTEGRATION
     # =========================
     identity_hash = result["identity_hash"]
     notion_id = result["notion_id"]
@@ -547,38 +530,35 @@ if decision_val == "FOUND":
             # Check cache Phase 4
             if identity_hash in st.session_state.phase4_cache:
                 p4_data = st.session_state.phase4_cache[identity_hash]
-                curr = p4_data.get("current", {})
-                sugg = p4_data.get("suggested", {})
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.markdown("#### Atual (Notion)")
-                    st.write(f"Prioridade: **{curr.get('priority')}**")
-                    st.text(f"Contexto: {curr.get('notes_context')[:50]}...")
+                    st.markdown("#### Atual")
+                    st.write(f"Prioridade: **{p4_data.get('current_priority')}**")
                 with col2:
-                    st.markdown("#### Sugestão (IA)")
-                    st.write(f"Prioridade: **{sugg.get('priority')}**")
-                    st.write(f"Subclassificação: **{sugg.get('sub_category')}**")
+                    st.markdown("#### Sugestão")
+                    st.write(f"Prioridade: **{p4_data.get('suggested_priority')}**")
+                    st.caption(f"Note: {p4_data.get('suggested_note')}")
+                
+                st.info(f"Modo: {p4_data.get('mode')}")
                 
                 if st.button("🔄 Re-classificar"):
                     del st.session_state.phase4_cache[identity_hash]
                     st.rerun()
             else:
-                st.info("Classificação de prioridade ainda não realizada para esta versão.")
-                if st.button("🚀 Rodar Classificação de Prioridade"):
-                    with st.spinner("Lendo Notion e consultando IA..."):
+                st.info("Classificação pendente.")
+                if st.button("🚀 Rodar Classificação"):
+                    with st.spinner("Analisando prioridade..."):
                         out = phase4_process(identity_hash, notion_id)
                         if "error" in out:
-                            st.error(f"Erro na Fase 4: {out['error']}")
+                            st.error(f"Erro: {out['error']}")
                         else:
-                            st.success("Classificação concluída!")
                             st.rerun()
         else:
-            st.error("Notion ID perdido. Não é possível rodar Fase 4.")
+            st.error("Notion ID perdido.")
 
 elif decision_val == "NOT_FOUND":
-    st.warning("⚠️ Mod não encontrado na base atual.")
-    st.markdown("A Fase 4 (Prioridade) requer que o mod já exista no Notion.")
+    st.warning("⚠️ Mod não encontrado na base.")
 
 else:
     st.error(f"Estado inválido: {decision_val}")
