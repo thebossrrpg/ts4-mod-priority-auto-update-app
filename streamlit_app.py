@@ -3,6 +3,7 @@
 # Version: v3.5.7.2 — Closed
 #
 # ADDITIVE ONLY — Contract preserved
+# Phase 3 enabled as real fallback
 # ============================================================
 
 
@@ -214,7 +215,6 @@ def build_identity_hash(identity: dict) -> str:
         "is_blocked": identity["debug"]["is_blocked"],
     }
     return sha256(json.dumps(canonical_identity, sort_keys=True))
-
 # =========================
 # NOTIONCACHE LOADER
 # =========================
@@ -331,9 +331,8 @@ def search_notioncache_candidates(mod_name: str, url: str) -> list:
             candidates.append(page)
 
     return list({c["notion_id"]: c for c in candidates}.values())[:35]
-
 # =========================
-# PHASE 3 — IA (SINAL)
+# PHASE 3 — IA (SINAL · FALLBACK REAL)
 # =========================
 
 def slug_quality(slug: str) -> str:
@@ -490,7 +489,6 @@ with st.sidebar:
             json.dumps(build_snapshot(), indent=2),
             "snapshot.json",
         )
-
 # =========================
 # UI — ANALYSIS
 # =========================
@@ -527,7 +525,10 @@ if st.button("Analisar") and url_input.strip():
             "notion_url": None,
         }
 
-        if candidates:
+        # =========================
+        # PHASE 2 — determinística
+        # =========================
+        if len(candidates) == 1:
             matched = candidates[0]
 
             notion_id = matched.get("id") or matched.get("notion_id")
@@ -546,16 +547,42 @@ if st.button("Analisar") and url_input.strip():
                 "display_name": display_name,
             })
 
-
             st.session_state.matchcache[identity_hash] = decision
 
+        # =========================
+        # PHASE 3 — fallback real
+        # =========================
         else:
-            decision.update({
-                "decision": "NOT_FOUND",
-                "reason": "No deterministic candidates",
-            })
+            payload = build_ai_payload(identity, candidates)
+            ai_result = call_primary_model(payload)
 
-            st.session_state.notfoundcache[identity_hash] = decision
+            log_ai_event("PHASE_3_FALLBACK", payload, ai_result)
+
+            if (
+                ai_result
+                and ai_result.get("match") is True
+                and ai_result.get("confidence", 0) >= PHASE3_CONFIDENCE_THRESHOLD
+            ):
+                notion_id = ai_result.get("notion_id")
+                notion_url = f"https://www.notion.so/{notion_id.replace('-', '')}" if notion_id else None
+
+                decision.update({
+                    "decision": "FOUND",
+                    "reason": "AI fallback match (Phase 3)",
+                    "notion_id": notion_id,
+                    "notion_url": notion_url,
+                    "display_name": ai_result.get("title"),
+                })
+
+                st.session_state.matchcache[identity_hash] = decision
+
+            else:
+                decision.update({
+                    "decision": "NOT_FOUND",
+                    "reason": "AI fallback no match (Phase 3)",
+                })
+
+                st.session_state.notfoundcache[identity_hash] = decision
 
         upsert_decision_log(identity_hash, decision)
         st.session_state.analysis_result = decision
@@ -612,4 +639,3 @@ else:
 with st.expander("🔍 Debug técnico"):
     st.markdown(f"**{result.get('reason')}**")
     st.json(result.get("identity", {}).get("debug", {}))
-
