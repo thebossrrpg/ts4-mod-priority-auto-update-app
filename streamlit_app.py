@@ -58,10 +58,7 @@ st.markdown(
 def render_footer():
     st.markdown(
         """
-        <div class="global-footer">
-            <img src="https://64.media.tumblr.com/05d22b63711d2c391482d6faad367ccb/675ea15a79446393-0d/s2048x3072/cc918dd94012fe16170f2526549f3a0b19ecbcf9.png">
-            Criado por Akin (@UnpaidSimmer)
-            <div style="font-size:0.7rem;opacity:0.6;">
+        <div class="global-footer"> <img src="https://64.media.tumblr.com/05d22b63711d2c391482d6faad367ccb/675ea15a79446393-0d/s2048x3072/cc918dd94012fe16170f2526549f3a0b19ecbcf9.png"> Criado por Akin (@UnpaidSimmer) <div style="font-size:0.7rem;opacity:0.6;">
                 v1.6.1.5 · Phase 4
             </div>
         </div>
