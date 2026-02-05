@@ -527,7 +527,7 @@ if st.button("Analisar") and url_input.strip():
     # =========================
     # CACHE MISS — avaliar
     # =========================
-    else:
+        else:
         candidates = search_notioncache_candidates(
             identity["mod_name"],
             identity["url"]
@@ -544,86 +544,79 @@ if st.button("Analisar") and url_input.strip():
             "reason": None,
             "notion_id": None,
             "notion_url": None,
+            "display_name": None,
         }
 
-    # =========================
-# PHASE 2 — determinística
-# =========================
-if len(candidates) == 1:
-    decision["phases_executed"].append("PHASE_2")
+        # =========================
+        # PHASE 2 — determinística
+        # =========================
+        if len(candidates) == 1:
+            decision["phases_executed"].append("PHASE_2")
 
-    matched = candidates[0]
+            matched = candidates[0]
+            notion_id = matched.get("id") or matched.get("notion_id")
+            notion_url = (
+                f"https://www.notion.so/{notion_id.replace('-', '')}"
+                if notion_id else None
+            )
 
-    notion_id = matched.get("id") or matched.get("notion_id")
-    notion_url = (
-        f"https://www.notion.so/{notion_id.replace('-', '')}"
-        if notion_id else None
-    )
+            decision.update({
+                "decision": "FOUND",
+                "reason": "Deterministic match (Phase 2)",
+                "notion_id": notion_id,
+                "notion_url": notion_url,
+                "display_name": matched.get("title") or matched.get("filename"),
+            })
 
-    display_name = (
-        matched.get("title")
-        or matched.get("filename")
-    )
+            st.session_state.matchcache[identity_hash] = decision
 
-    decision.update({
-        "decision": "FOUND",
-        "reason": "Deterministic match (Phase 2)",
-        "notion_id": notion_id,
-        "notion_url": notion_url,
-        "display_name": display_name,
-    })
+        # =========================
+        # PHASE 3 — fallback real
+        # =========================
+        else:
+            decision["phases_executed"].append("PHASE_3")
 
-    st.session_state.matchcache[identity_hash] = decision
+            payload = build_ai_payload(identity, candidates)
+            ai_result = call_primary_model(payload)
 
-# =========================
-# PHASE 3 — fallback real
-# =========================
-else:
-    decision["phases_executed"].append("PHASE_3")
+            log_ai_event(
+                stage="PHASE_3_FALLBACK",
+                payload=payload,
+                result=ai_result
+            )
 
-    payload = build_ai_payload(identity, candidates)
-    ai_result = call_primary_model(payload)
+            if (
+                ai_result
+                and ai_result.get("match") is True
+                and ai_result.get("confidence", 0) >= PHASE3_CONFIDENCE_THRESHOLD
+            ):
+                notion_id = ai_result.get("notion_id")
+                notion_url = (
+                    f"https://www.notion.so/{notion_id.replace('-', '')}"
+                    if notion_id else None
+                )
 
-    # 🔒 LOG TÉCNICO OBRIGATÓRIO (sempre que Phase 3 roda)
-    log_ai_event(
-        stage="PHASE_3_FALLBACK",
-        payload={
-            "identity_hash": identity_hash,
-            "is_blocked": identity["debug"]["is_blocked"],
-            "phase_2_candidates": len(candidates),
-            "identity": identity,
-            "candidates": candidates,
-        },
-        result=ai_result,
-    )
+                decision.update({
+                    "decision": "FOUND",
+                    "reason": "AI fallback match (Phase 3)",
+                    "notion_id": notion_id,
+                    "notion_url": notion_url,
+                    "display_name": ai_result.get("title"),
+                })
 
-    if (
-        ai_result.get("match") is True
-        and ai_result.get("confidence", 0) >= PHASE3_CONFIDENCE_THRESHOLD
-    ):
-        notion_id = ai_result.get("notion_id")
-        notion_url = (
-            f"https://www.notion.so/{notion_id.replace('-', '')}"
-            if notion_id else None
-        )
+                st.session_state.matchcache[identity_hash] = decision
 
-        decision.update({
-            "decision": "FOUND",
-            "reason": "AI fallback match (Phase 3)",
-            "notion_id": notion_id,
-            "notion_url": notion_url,
-            "display_name": ai_result.get("title"),
-        })
+            else:
+                decision.update({
+                    "decision": "NOT_FOUND",
+                    "reason": "AI fallback no match (Phase 3)",
+                })
 
-        st.session_state.matchcache[identity_hash] = decision
+                st.session_state.notfoundcache[identity_hash] = decision
 
-    else:
-        decision.update({
-            "decision": "NOT_FOUND",
-            "reason": "AI fallback no match (Phase 3)",
-        })
+        upsert_decision_log(identity_hash, decision)
+        st.session_state.analysis_result = decision
 
-        st.session_state.notfoundcache[identity_hash] = decision
 
 # =========================
 # UI — RESULTADO (CANÔNICO · RECONSTRUÍDO)
